@@ -29,6 +29,7 @@
   const EMPTY_CLASS = "rose-jade-native-card--empty";
   const ACTIVE_ROOT_CLASS = "rose-jade-wheel-active";
   const VISUAL_PROTECTION_EVENT = "rose-jade-visual-protection";
+  const SELECTION_CHANGE_EVENT = "rose-classic-selection-change";
   const POLL_INTERVAL_MS = 450;
   const CATALOG_REFRESH_MS = 2000;
   const USER_NAVIGATION_WINDOW_MS = 6000;
@@ -82,12 +83,17 @@
   let historicRestoreGeneration = 0;
   let historicRestoreInProgress = false;
   let randomModeActive = false;
+  let pendingRandomResourceSkinId = 0;
+  let appliedRandomResourceSkinId = 0;
+  let randomProjectionSuppressed = false;
   let visualCarrierProtectionActive = false;
   let projectedVariantRawSkinId = 0;
   let lastVisualCenterRawSkinId = 0;
   let lastLayoutKey = "";
   let lastVisualProtectionKey = "";
   let lastReadRewriteKey = "";
+  let refreshNativeSkinPresentation = null;
+  let latestNativeSkinSelectorEvent = null;
   let lastCatalogSyncKey = "";
   let visualProtectionClearTimer = null;
 
@@ -275,6 +281,22 @@
         const ws = api.champSelectBinding.socket._websocket;
         if (!ws || ws.__roseJadeReadProjection) return;
         const parentOnMessage = ws.onmessage;
+        refreshNativeSkinPresentation = (desiredRawSkinId) => {
+          if (!active || !latestNativeSkinSelectorEvent || !desiredRawSkinId) return;
+          const payload = JSON.parse(JSON.stringify(latestNativeSkinSelectorEvent.payload));
+          const selectedChampionId = numeric(payload[2]?.data?.selectedChampionId);
+          if (selectedChampionId && selectedChampionId !== Math.floor(desiredRawSkinId / 1000)) {
+            return;
+          }
+          payload[2].data.selectedSkinId = desiredRawSkinId;
+          parentOnMessage.call(
+            ws,
+            cloneWebsocketEvent(latestNativeSkinSelectorEvent.event, payload)
+          );
+          log("info", "Refreshed native classic skin presentation", {
+            selectedSkinId: desiredRawSkinId,
+          });
+        };
         ws.onmessage = function roseJadeProjectedMessage(event) {
           try {
             const payload = JSON.parse(event.data);
@@ -284,9 +306,16 @@
             const eventData = payload[2];
             if (eventData?.uri === "/lol-champ-select/v1/skin-selector-info") {
               const selectedSkinId = eventData.data?.selectedSkinId;
+              latestNativeSkinSelectorEvent = { event, payload };
               if (shouldSuppressVisualRollback(selectedSkinId)) {
-                log("info", "Suppressed classic selector rollback", { selectedSkinId });
-                return;
+                eventData.data.selectedSkinId = numeric(
+                  window.__roseJadeVisualProtection?.desiredRawSkinId
+                );
+                log("info", "Projected classic selector rollback", {
+                  selectedSkinId,
+                  projectedSkinId: eventData.data.selectedSkinId,
+                });
+                return parentOnMessage.call(this, cloneWebsocketEvent(event, payload));
               }
             } else if (eventData?.uri === "/lol-champ-select/v1/session") {
               const protection = window.__roseJadeVisualProtection;
@@ -318,14 +347,14 @@
       const method = requestMethod(input, init);
       if (
         active &&
-        visualCarrierProtectionActive &&
         method === "PATCH" &&
         path === "/lol-champ-select/v1/session/my-selection"
       ) {
         try {
           const body = JSON.parse(String(init?.body || "{}"));
           const requestedRawSkinId = numeric(body.selectedSkinId) || 0;
-          if (catalogEntryForRawSkinId(requestedRawSkinId)) {
+          const requestedEntry = catalogEntryForRawSkinId(requestedRawSkinId);
+          if (requestedEntry && !requestedEntry.available && !requestedEntry.isBase) {
             log("info", "Deferred classic LCU write to finalization", {
               requestedRawSkinId,
             });
@@ -380,6 +409,9 @@
   function syncVisualSelection(entry, reason, userInitiated = false) {
     if (!bridge || !entry?.name || !entry.resourceSkinId) return;
     if (userInitiated) selectionGeneration += 1;
+    if (userInitiated && visualCarrierProtectionActive) {
+      refreshNativeSkinPresentation?.(entry.rawSkinId);
+    }
     try {
       // Python validates this ID against the active JADE carousel before it
       // updates the same injection state used by regular champion select.
@@ -399,6 +431,7 @@
         rawChampionId: entry.rawChampionId,
         baseRawSkinId: modeDefaultRawSkinId || fallbackModeDefaultRawSkinId(),
         catalog: catalogBridgeEntries(),
+        randomEligibleRawSkinIds: catalog.map((item) => item.rawSkinId),
         source: "jade-wheel",
         reason,
         userInitiated,
@@ -406,6 +439,7 @@
         available: entry.available === true,
         timestamp: Date.now(),
       });
+      dispatchSelectionChange(reason);
       log("info", "Classic visual skin synced", {
         reason,
         rawSkinId: entry.rawSkinId,
@@ -467,6 +501,7 @@
       selectedRawSkinId,
       baseRawSkinId,
       catalog: entries,
+      randomEligibleRawSkinIds: catalog.map((entry) => entry.rawSkinId),
       reason,
       timestamp: Date.now(),
     });
@@ -685,7 +720,11 @@
     return null;
   }
 
-  function projectResourceSelection(resourceId, reason = "external-state") {
+  function projectResourceSelection(
+    resourceId,
+    reason = "external-state",
+    onComplete = null
+  ) {
     if (!active || !catalog.length) return false;
     const selection = catalogSelectionForResourceSkinId(resourceId);
     if (!selection) return false;
@@ -701,8 +740,17 @@
     lastVisualCenterRawSkinId = 0;
     clearUserNavigation();
     setVisualProtection(entry, reason, visualCarrierProtectionActive);
-    scheduleNativeProjection(projectedCatalogIndex);
+    scheduleNativeProjection(projectedCatalogIndex, () => {
+      if (
+        active && desiredVisualSelection?.rawSkinId === entry.rawSkinId &&
+        visualCarrierProtectionActive
+      ) {
+        refreshNativeSkinPresentation?.(entry.rawSkinId);
+      }
+      if (typeof onComplete === "function") onComplete();
+    });
     adaptNativeController();
+    dispatchSelectionChange(reason);
     log("info", "Classic resource selection projected into native selector", {
       reason,
       resourceSkinId: numeric(resourceId) || 0,
@@ -731,9 +779,9 @@
     ) {
       return;
     }
-    if (projectResourceSelection(resourceId, "historic-restore")) {
-      const selection = catalogSelectionForResourceSkinId(resourceId);
-      scheduleNativeProjection(projectedCatalogIndex, () => {
+    const selection = catalogSelectionForResourceSkinId(resourceId);
+    if (
+      projectResourceSelection(resourceId, "historic-restore", () => {
         if (
           !active || generation !== historicRestoreGeneration ||
           pendingHistoricResourceSkinId !== resourceId
@@ -749,12 +797,13 @@
         window.dispatchEvent(new CustomEvent("rose-jade-historic-presentation", {
           detail: presentation,
         }));
-        log("info", "Classic history projected after native default staging", {
+        log("info", "Classic history projected into native selector", {
           historicResourceSkinId: resourceId,
           visualRawSkinId: selection?.entry?.rawSkinId || 0,
           variantRawSkinId: selection?.rawSkinId || 0,
         });
-      });
+      })
+    ) {
       return;
     }
     historicRestoreInProgress = false;
@@ -778,36 +827,11 @@
         return;
       }
       if (historicRestoreInProgress) return;
-      const defaultEntry = catalog.find((entry) => entry.isBase) || null;
-      if (!defaultEntry || defaultEntry === selection.entry) {
-        finishHistoricVisualSelection(
-          pendingHistoricResourceSkinId,
-          historicRestoreGeneration
-        );
-        return;
-      }
       historicRestoreInProgress = true;
       const resourceId = pendingHistoricResourceSkinId;
       const generation = ++historicRestoreGeneration;
-      setHistoricPresentationReady(false, "historic-default-stage");
-      visualCarrierProtectionActive = false;
-      projectedVariantRawSkinId = defaultEntry.rawSkinId;
-      desiredVisualSelection = defaultEntry;
-      projectedCatalogIndex = catalog.indexOf(defaultEntry);
-      lastVisualCenterRawSkinId = 0;
-      clearUserNavigation();
-      setVisualProtection(null, "historic-default-stage");
-      adaptNativeController();
-      scheduleNativeProjection(projectedCatalogIndex, () => {
-        setTimeout(
-          () => finishHistoricVisualSelection(resourceId, generation),
-          100
-        );
-      });
-      log("info", "Classic history restore staged from native default", {
-        historicResourceSkinId: resourceId,
-        defaultRawSkinId: defaultEntry.rawSkinId,
-      });
+      setHistoricPresentationReady(false, "historic-restore");
+      finishHistoricVisualSelection(resourceId, generation);
       return;
     }
     cancelHistoricVisualRestore("historic-default", true);
@@ -827,31 +851,64 @@
       : 0;
     if (!pendingHistoricResourceSkinId) {
       cancelHistoricVisualRestore("historic-disabled", true);
+      cancelNativeProjection();
       lastAppliedHistoricResourceSkinId = 0;
     }
     if (pendingHistoricResourceSkinId) applyHistoricVisualSelection();
   }
 
   function handleRandomModeState(data) {
+    const wasActive = randomModeActive;
     randomModeActive = data?.active === true;
-    if (!randomModeActive) return;
+    if (!randomModeActive) {
+      if (wasActive && appliedRandomResourceSkinId) cancelNativeProjection();
+      pendingRandomResourceSkinId = 0;
+      appliedRandomResourceSkinId = 0;
+      randomProjectionSuppressed = false;
+      return;
+    }
     cancelHistoricVisualRestore("random-mode", true);
     pendingHistoricResourceSkinId = 0;
     lastAppliedHistoricResourceSkinId = 0;
-    projectedVariantRawSkinId = 0;
-    clearUserNavigation();
-    const defaultEntry = catalog.find((entry) => entry.isBase) || null;
-    if (!defaultEntry) return;
-    visualCarrierProtectionActive = false;
-    desiredVisualSelection = defaultEntry;
-    projectedCatalogIndex = catalog.indexOf(defaultEntry);
-    lastVisualCenterRawSkinId = 0;
-    setVisualProtection(null, "random-default-presentation");
-    adaptNativeController();
-    scheduleNativeProjection(projectedCatalogIndex);
-    log("info", "Random mode skipped history and centered the classic default", {
-      rawSkinId: defaultEntry.rawSkinId,
-      resourceSkinId: defaultEntry.resourceSkinId,
+    const nextRandomResourceSkinId = numeric(data?.randomSkinId) || 0;
+    const resultChanged = nextRandomResourceSkinId !== pendingRandomResourceSkinId;
+    if (resultChanged) appliedRandomResourceSkinId = 0;
+    pendingRandomResourceSkinId = nextRandomResourceSkinId;
+    if (!wasActive || resultChanged) {
+      cancelNativeProjection();
+      clearUserNavigation();
+    }
+    if (!wasActive) randomProjectionSuppressed = false;
+    applyPendingRandomVisualSelection();
+  }
+
+  function randomProjectionReady() {
+    return phase === "FINALIZATION" || phase === "GameStart";
+  }
+
+  function applyPendingRandomVisualSelection() {
+    if (
+      !active || !randomModeActive || randomProjectionSuppressed ||
+      !pendingRandomResourceSkinId || !randomProjectionReady() || !catalog.length
+    ) {
+      return;
+    }
+    const selection = catalogSelectionForResourceSkinId(pendingRandomResourceSkinId);
+    if (!selection) return;
+    if (pendingRandomResourceSkinId === appliedRandomResourceSkinId) {
+      projectedVariantRawSkinId = selection.rawSkinId;
+      visualCarrierProtectionActive = !selection.entry.isBase;
+      desiredVisualSelection = selection.entry;
+      projectedCatalogIndex = catalog.indexOf(selection.entry);
+      setVisualProtection(selection.entry, "random-catalog-refresh", true);
+      adaptNativeController();
+      return;
+    }
+    if (!projectResourceSelection(pendingRandomResourceSkinId, "random-state")) return;
+    appliedRandomResourceSkinId = pendingRandomResourceSkinId;
+    log("info", "Classic random result projected during finalization", {
+      rawSkinId: selection.rawSkinId,
+      resourceSkinId: resourceSkinId(selection.rawSkinId),
     });
   }
 
@@ -1142,10 +1199,27 @@
   }
 
   function beginUserNavigation(targetRawSkinId = 0) {
-    if (pendingHistoricResourceSkinId || lastAppliedHistoricResourceSkinId) {
-      setHistoricPresentationReady(false, "user-navigation");
+    const targetId = numeric(targetRawSkinId) || 0;
+    const targetEntry = targetId ? catalogEntryForRawSkinId(targetId) : null;
+    if (
+      historicRestoreInProgress || pendingHistoricResourceSkinId ||
+      lastAppliedHistoricResourceSkinId
+    ) {
+      cancelHistoricVisualRestore("user-navigation", true);
+      pendingHistoricResourceSkinId = 0;
+      lastAppliedHistoricResourceSkinId = 0;
     }
-    if (visualCarrierProtectionActive) {
+    cancelNativeProjection();
+    if (randomModeActive) {
+      appliedRandomResourceSkinId = 0;
+      randomProjectionSuppressed = true;
+    }
+    if (targetEntry && !targetEntry.available && !targetEntry.isBase) {
+      visualCarrierProtectionActive = true;
+      desiredVisualSelection = targetEntry;
+      projectedCatalogIndex = catalog.indexOf(targetEntry);
+      setVisualProtection(targetEntry, "user-navigation-target", true);
+    } else if (visualCarrierProtectionActive && (!targetId || targetEntry?.isBase)) {
       visualCarrierProtectionActive = false;
       projectedCatalogIndex = -1;
       setVisualProtection(null, "user-navigation");
@@ -1154,7 +1228,7 @@
     }
     pendingUserNavigation = true;
     pendingUserNavigationUntil = Date.now() + USER_NAVIGATION_WINDOW_MS;
-    pendingUserTargetRawSkinId = numeric(targetRawSkinId) || 0;
+    pendingUserTargetRawSkinId = targetId;
     pendingUserSelectionPublished = false;
   }
 
@@ -1179,6 +1253,14 @@
     projectedCatalogIndex = catalog.indexOf(entry);
     syncVisualSelection(entry, reason, true);
     pendingUserSelectionPublished = true;
+  }
+
+  function cancelNativeProjection() {
+    if (nativeProjectionTimer) clearTimeout(nativeProjectionTimer);
+    nativeProjectionTimer = null;
+    nativeProjectionTargetIndex = -1;
+    nativeProjectionCurrentIndex = -1;
+    nativeProjectionComplete = null;
   }
 
   function scheduleNativeProjection(targetIndex, onComplete = null) {
@@ -1323,7 +1405,13 @@
     if (active && (event.key === "ArrowLeft" || event.key === "ArrowRight")) {
       pendingHistoricResourceSkinId = 0;
       projectedVariantRawSkinId = 0;
-      beginUserNavigation();
+      const cards = nativeCards();
+      const centerCard = selectedNativeCard(cards);
+      const centerEntry = centerCard ? matchCardToCatalog(centerCard) : null;
+      const currentIndex = centerEntry ? catalog.indexOf(centerEntry) : -1;
+      const direction = event.key === "ArrowLeft" ? -1 : 1;
+      const target = currentIndex >= 0 ? catalog[currentIndex + direction] : null;
+      beginUserNavigation(target?.rawSkinId || 0);
     }
   }
 
@@ -1356,8 +1444,7 @@
     );
     if (!anchor) {
       anchor = document.createElement("div");
-      anchor.className =
-        "rose-jade-history-anchor skin-selection-item-information loyalty-reward-icon--rewards";
+      anchor.className = "rose-jade-history-anchor";
       centerCard.appendChild(anchor);
     }
   }
@@ -1440,8 +1527,7 @@
           lcuResourceSkinId: visualCenterEntry?.resourceSkinId || selectedResourceSkinId,
         });
       } else if (!isIntermediateUserNavigation) {
-        visualCarrierProtectionActive =
-          !centerEntry.available && !centerEntry.isBase;
+        visualCarrierProtectionActive = !centerEntry.available && !centerEntry.isBase;
         setVisualProtection(
           centerEntry,
           "visual-center-change",
@@ -1569,6 +1655,7 @@
     catalog = nextCatalog;
     syncModeCatalog(force ? "forced-refresh" : "refresh");
     applyHistoricVisualSelection();
+    applyPendingRandomVisualSelection();
   }
 
   async function refreshSelection(forceCatalog = false) {
@@ -1590,6 +1677,8 @@
         visualCarrierProtectionActive = false;
         projectedCatalogIndex = -1;
         lastAppliedHistoricResourceSkinId = 0;
+        appliedRandomResourceSkinId = 0;
+        randomProjectionSuppressed = false;
         projectedVariantRawSkinId = 0;
         setVisualProtection(null, "champion-change");
         desiredVisualSelection = null;
@@ -1604,6 +1693,7 @@
       }
       await loadModeCatalog(forceCatalog || championChanged || !catalog.length);
       adaptNativeController();
+      dispatchSelectionChange(championChanged ? "champion-change" : "selection-refresh");
     } catch (error) {
       log("debug", "Waiting for native classic skin selector", String(error));
     } finally {
@@ -1765,6 +1855,9 @@
     cancelHistoricVisualRestore("runtime-stop", true);
     nativeProjectionComplete = null;
     randomModeActive = false;
+    pendingRandomResourceSkinId = 0;
+    appliedRandomResourceSkinId = 0;
+    randomProjectionSuppressed = false;
     projectedVariantRawSkinId = 0;
     pointerSelectionRawSkinId = 0;
     pointerSelectionUntil = 0;
@@ -1772,6 +1865,7 @@
     lastVisualCenterRawSkinId = 0;
     lastVisualProtectionKey = "";
     lastReadRewriteKey = "";
+    latestNativeSkinSelectorEvent = null;
     refreshInFlight = false;
     if (visualProtectionClearTimer) clearTimeout(visualProtectionClearTimer);
     visualProtectionClearTimer = setTimeout(() => {
@@ -1815,7 +1909,42 @@
     mapId = data.mapId ?? mapId;
     queueId = data.queueId ?? queueId;
     reconcileRuntime();
+    applyPendingRandomVisualSelection();
     if (isChampSelectPhase() && !isJadeClassicContext()) syncContextFromLcu();
+  }
+
+  function currentSelection() {
+    if (!active) return null;
+    const rawSkinId = numeric(
+      projectedVariantRawSkinId ||
+      desiredVisualSelection?.rawSkinId ||
+      selectedRawSkinId
+    ) || 0;
+    const catalogEntry = catalogEntryForRawSkinId(rawSkinId);
+    if (!catalogEntry || !rawSkinId) return null;
+    const parentEntry = catalogEntry.rawSkin;
+    const selectedEntry = catalogEntry.rawSkinId === rawSkinId
+      ? parentEntry
+      : variantsOf(parentEntry).find(
+          (entry) => numeric(entry?.id ?? entry?.skinId) === rawSkinId
+        ) || parentEntry;
+    return {
+      championId,
+      rawChampionId,
+      skinId: resourceSkinId(rawSkinId),
+      rawSkinId,
+      selectedEntry,
+      parentEntry,
+    };
+  }
+
+  function dispatchSelectionChange(reason) {
+    window.dispatchEvent(new CustomEvent(SELECTION_CHANGE_EVENT, {
+      detail: {
+        reason: String(reason || ""),
+        selection: currentSelection(),
+      },
+    }));
   }
 
   async function start() {
@@ -1834,8 +1963,9 @@
     log("info", "Plugin initialized");
   }
 
-  window.__roseJadeWheelDebug = {
+  const classicWheelApi = {
     refresh: () => refreshSelection(true),
+    currentSelection,
     state: () => ({
       active,
       phase,
@@ -1862,6 +1992,8 @@
     catalogData: () => catalog.map((entry) => entry.rawSkin),
     projectResourceSelection,
   };
+  window.__roseClassicWheelApi = classicWheelApi;
+  window.__roseJadeWheelDebug = classicWheelApi;
 
   start().catch((error) => log("error", "Plugin initialization failed", String(error)));
 })();
