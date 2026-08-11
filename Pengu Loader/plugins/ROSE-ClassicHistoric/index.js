@@ -18,7 +18,7 @@
   let presentationReady = false;
 
   function jadeActive() {
-    return window.__roseJadeWheelDebug?.state?.().active === true;
+    return window.__roseClassicWheelApi?.state?.().active === true;
   }
 
   function cleanup() {
@@ -186,7 +186,9 @@
   function handlePhaseChange(data) {
     const phase = String(data?.phase || "");
     const classicMode =
-      Number(data?.mapId) === 453 || String(data?.gameMode || "").toUpperCase() === "JADE";
+      Number(data?.mapId) === 453 ||
+      Number(data?.queueId) === 3260 ||
+      String(data?.gameMode || "").toUpperCase() === "JADE";
     isInJadeChampSelect =
       classicMode && (phase === "ChampSelect" || phase === "FINALIZATION");
     if (!isInJadeChampSelect) {
@@ -238,6 +240,8 @@
       render();
     });
     bridge.subscribe("phase-change", handlePhaseChange);
+    const classicState = window.__roseClassicWheelApi?.state?.();
+    if (classicState) handlePhaseChange(classicState);
     window.addEventListener("rose-jade-wheel-layout", handleWheelLayout);
     bridge.onReady(() => bridge.send({ type: "request-local-asset", assetPath: ASSET }));
     bridge.send({ type: "request-local-asset", assetPath: ASSET });
