@@ -316,6 +316,7 @@ class WebSocketEventHandler:
         except (TypeError, ValueError):
             return
 
+        previous_lcu_skin_id = self.state.selected_lcu_skin_id
         self.state.selected_lcu_skin_id = raw_skin_id
         if not is_classic_mode(self.state.current_game_mode):
             self.state.selected_skin_id = raw_skin_id
@@ -364,6 +365,15 @@ class WebSocketEventHandler:
                 raw_skin_id == self.state.classic_carrier_lcu_skin_id
                 or raw_skin_id in owned
                 or selected_resource_id in owned
+            )
+        if previous_lcu_skin_id != raw_skin_id:
+            log.info(
+                "[CLASSIC:LCU] observed raw=%s resource=%s projected=%s owned=%s carrier=%s",
+                raw_skin_id,
+                selected_resource_id,
+                projected_raw_skin_id or "none",
+                self.state.classic_selected_skin_owned,
+                self.state.classic_carrier_lcu_skin_id,
             )
         self.state.selected_skin_id = selected_resource_id
         try:

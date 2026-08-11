@@ -623,7 +623,7 @@ class InjectionTrigger:
                 and not has_any_mods
             ):
                 log.info(
-                    "[CLASSIC] Officially owned skin selected; skipping local skin injection"
+                    "[CLASSIC:INJECT] Officially owned skin selected; skipping local skin injection"
                 )
                 if self.injection_manager:
                     self.injection_manager.resume_if_suspended()
@@ -654,7 +654,7 @@ class InjectionTrigger:
                 if target_is_owned:
                     self._force_owned_skin(effective_skin_id)
                     log.info(
-                        "[INJECT] Custom mod targets owned skin %s; "
+                        "[CLASSIC:INJECT] Custom mod targets owned skin %s; "
                         "keeping the real owned skin and injecting the mod only",
                         effective_skin_id,
                     )
@@ -671,7 +671,7 @@ class InjectionTrigger:
 
                     if carrier_name:
                         log.info(
-                            "[INJECT] Custom mod targets unowned skin %s; "
+                            "[CLASSIC:INJECT] Custom mod targets unowned skin %s; "
                             "injecting carrier %s + custom mod",
                             target_skin_id,
                             carrier_name,
@@ -683,7 +683,7 @@ class InjectionTrigger:
                         )
                     else:
                         log.info(
-                            "[INJECT] Custom mod targets the champion base skin %s; "
+                            "[CLASSIC:INJECT] Custom mod targets the champion base skin %s; "
                             "injecting custom mod only",
                             target_skin_id,
                         )

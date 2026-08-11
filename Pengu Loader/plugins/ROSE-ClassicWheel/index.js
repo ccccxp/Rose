@@ -122,8 +122,8 @@
     if (!bridge) return;
     try {
       bridge.send({
-        type: "chroma-log",
-        source: "JadeWheel",
+        type: "plugin-log",
+        source: "ClassicWheel",
         level,
         message,
         data,

@@ -20,6 +20,14 @@
   let isInJadeChampSelect = false;
   let championLocked = false;
 
+  function log(level, message, data = null) {
+    const method = level === "error" ? "error" : level === "warn" ? "warn" : "log";
+    console[method](`[ClassicRandom] ${message}`, data || "");
+    try {
+      bridge?.send({ type: "plugin-log", source: "ClassicRandom", level, message, data, timestamp: Date.now() });
+    } catch (_) {}
+  }
+
   function jadeActive() {
     return window.__roseClassicWheelApi?.state?.().active === true;
   }
@@ -82,6 +90,7 @@
         const previousState = active ? "enabled" : "disabled";
         active = !active;
         enabled = active;
+        log("info", "Random toggle requested", { previousState, nextState: active ? "enabled" : "disabled" });
         render();
         bridge?.send({
           type: "dice-button-click",
@@ -164,6 +173,7 @@
     bridge.subscribe("random-mode-state", (data) => {
       active = data?.active === true;
       enabled = active;
+      log("info", "Random state confirmed", { active });
       render();
     });
     bridge.subscribe("local-asset-url", handleAsset);
@@ -174,6 +184,7 @@
     window.addEventListener("rose-jade-wheel-layout", handleWheelLayout);
     bridge.onReady(requestAssets);
     requestAssets();
+    log("info", "Classic random plugin initialized");
     new MutationObserver(render).observe(document.body, { childList: true, subtree: true });
     setInterval(render, 500);
   }

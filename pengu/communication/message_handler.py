@@ -176,7 +176,7 @@ class MessageHandler:
         payload_type = payload.get("type")
         
         # Route to appropriate handler
-        if payload_type == "chroma-log":
+        if payload_type in {"chroma-log", "plugin-log"}:
             self._handle_chroma_log(payload)
         elif payload_type == "request-local-preview":
             self._handle_request_local_preview(payload)
@@ -267,11 +267,19 @@ class MessageHandler:
             self._handle_skin_detection(payload)
     
     def _handle_chroma_log(self, payload: dict) -> None:
-        """Handle chroma log message"""
-        source = payload.get("source", "ChromaWheel")
+        """Persist browser plug-in logs without losing their level or source."""
+        source = str(payload.get("source") or "UnknownPlugin")[:64]
         event = payload.get("event") or payload.get("message") or "unknown"
         details = payload.get("data") or payload
-        log.info("[%s] %s | %s", source, event, details)
+        level = str(payload.get("level") or "info").lower()
+        emit = {
+            "debug": log.debug,
+            "info": log.info,
+            "warn": log.warning,
+            "warning": log.warning,
+            "error": log.error,
+        }.get(level, log.info)
+        emit("[PLUGIN:%s] %s | %s", source, event, details)
     
     def _handle_request_local_preview(self, payload: dict) -> None:
         """Handle request for local preview image"""
@@ -424,6 +432,13 @@ class MessageHandler:
             self.shared_state.classic_random_eligible_resource_skin_ids = {
                 resource_skin_id(value) for value in eligible_raw_ids
             }
+        log.info(
+            "[CLASSIC:CATALOG] accepted champion=%s raw_count=%s carrier=%s random_count=%s",
+            prime_champion_id,
+            len(raw_ids),
+            carrier,
+            len(self.shared_state.classic_random_eligible_resource_skin_ids),
+        )
         return True
 
     def _handle_classic_mode_catalog(self, payload: dict) -> None:
@@ -431,6 +446,12 @@ class MessageHandler:
             log.warning("Rejected invalid Classic Mode catalog")
             return
         champion_id = self.shared_state.classic_prime_champion_id
+        log.info(
+            "[CLASSIC:CATALOG] processing champion=%s persisted_random=%s history_checked=%s",
+            champion_id,
+            self.shared_state.random_mode_active,
+            self.shared_state.historic_first_detection_done,
+        )
         try:
             from utils.core.random_preferences import is_random_enabled_for_champion
 
@@ -527,6 +548,7 @@ class MessageHandler:
         self.shared_state.classic_selection_generation = incoming_generation
 
         selection_source = str(payload.get("source") or "")
+        lcu_action = "owned-selection"
         if owned:
             self.shared_state.classic_visual_skin_id = None
             self.shared_state.classic_visual_raw_skin_id = None
@@ -539,11 +561,23 @@ class MessageHandler:
                 if lcu is not None:
                     lcu.set_my_selection_skin(raw_skin_id)
         else:
+            lcu_action = "carrier-fallback"
             self.shared_state.classic_visual_skin_id = visual_skin_id
             self.shared_state.classic_visual_raw_skin_id = raw_skin_id
             lcu = getattr(self.skin_scraper, "lcu", None)
             if lcu is not None:
                 lcu.set_my_selection_skin(carrier)
+
+        log.info(
+            "[CLASSIC:SELECTION] source=%s visual=%s raw=%s owned=%s carrier=%s lcu_action=%s generation=%s",
+            selection_source or "classic-wheel",
+            visual_skin_id,
+            raw_skin_id,
+            owned,
+            carrier,
+            lcu_action,
+            incoming_generation,
+        )
 
         if payload.get("userInitiated") is True:
             if (
@@ -607,6 +641,13 @@ class MessageHandler:
             )
             self.shared_state.classic_visual_chroma_id = selected_chroma_id
             self.shared_state.selected_chroma_id = selected_chroma_id
+            log.info(
+                "[CLASSIC:CHROMA] selected raw=%s visual=%s chroma=%s owned=%s",
+                raw_skin_id,
+                visual_skin_id,
+                selected_chroma_id,
+                self.shared_state.classic_selected_skin_owned,
+            )
             self.broadcaster.broadcast_chroma_state()
     
     def _handle_chroma_selection(self, payload: dict) -> None:

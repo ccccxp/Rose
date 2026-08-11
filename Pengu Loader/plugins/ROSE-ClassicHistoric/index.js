@@ -17,6 +17,14 @@
   let randomModeActive = false;
   let presentationReady = false;
 
+  function log(level, message, data = null) {
+    const method = level === "error" ? "error" : level === "warn" ? "warn" : "log";
+    console[method](`[ClassicHistoric] ${message}`, data || "");
+    try {
+      bridge?.send({ type: "plugin-log", source: "ClassicHistoric", level, message, data, timestamp: Date.now() });
+    } catch (_) {}
+  }
+
   function jadeActive() {
     return window.__roseClassicWheelApi?.state?.().active === true;
   }
@@ -219,10 +227,12 @@
       if (!nextActive || nextSkinName !== skinName) presentationReady = false;
       active = nextActive;
       skinName = nextSkinName;
+      log("info", "Historic state updated", { active, skinName, randomModeActive });
       render();
     });
     bridge.subscribe("random-mode-state", (data) => {
       randomModeActive = data?.active === true;
+      log("info", "Random state observed", { active: randomModeActive });
       render();
     });
     bridge.subscribe("local-asset-url", (data) => {
@@ -245,6 +255,7 @@
     window.addEventListener("rose-jade-wheel-layout", handleWheelLayout);
     bridge.onReady(() => bridge.send({ type: "request-local-asset", assetPath: ASSET }));
     bridge.send({ type: "request-local-asset", assetPath: ASSET });
+    log("info", "Classic historic plugin initialized");
     new MutationObserver(render).observe(document.body, { childList: true, subtree: true });
   }
 

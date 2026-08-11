@@ -19,6 +19,14 @@
   let panelParentRawId = 0;
   let outsideClickHandler = null;
 
+  function log(level, message, data = null) {
+    const method = level === "error" ? "error" : level === "warn" ? "warn" : "log";
+    console[method](`[ClassicChroma] ${message}`, data || "");
+    try {
+      bridge?.send({ type: "plugin-log", source: "ClassicChroma", level, message, data, timestamp: Date.now() });
+    } catch (_) {}
+  }
+
   function api() {
     return window.__roseClassicWheelApi;
   }
@@ -276,6 +284,12 @@
         event.stopPropagation();
         const resourceId = choice.resourceId;
         const rawId = choice.rawId;
+        log("info", "Chroma selection submitted", {
+          rawSkinId: rawId,
+          resourceSkinId: resourceId,
+          isBase: choice.isBase,
+          parentRawSkinId: rawIdOf(parent),
+        });
         api().projectResourceSelection(resourceId, "chroma-state");
         bridge?.send({
           type: "chroma-selection",
@@ -322,6 +336,7 @@
     isInJadeChampSelect =
       classicMode && (phase === "ChampSelect" || phase === "FINALIZATION");
     if (!isInJadeChampSelect) championLocked = false;
+    log("debug", "Phase state updated", { phase, active: isInJadeChampSelect, championLocked });
     render();
   }
 
@@ -477,6 +492,7 @@
     bridge.subscribe("phase-change", handlePhaseChange);
     bridge.subscribe("champion-locked", handleChampionLocked);
     bridge.subscribe("chroma-state", render);
+    log("info", "Classic chroma plugin initialized");
     const classicState = api()?.state?.();
     if (classicState) handlePhaseChange(classicState);
     window.addEventListener("rose-jade-wheel-layout", handleWheelLayout);
