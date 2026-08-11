@@ -2,92 +2,109 @@
 
 ## Overview
 
-Classic Mode support is implemented as an isolated feature for JADE games. The
-regular game-mode flow and its existing plug-ins remain unchanged. Classic-only
-state, persistence, resource resolution, and client plug-ins are kept separate
-so that a Classic selection cannot leak into a regular match.
+Classic Mode support is isolated to JADE sessions. Its catalog, projected
+selection, history, random preference, chroma state, package lookup, and client
+controls do not replace the regular-mode implementations. The regular chroma,
+forms, history, and random plug-ins only add a lifecycle guard that removes
+their controls while JADE is active and restores their normal behavior after
+the session.
 
-## Mode Detection
+## Mode and ID Boundary
 
-Rose normalizes the active mode from live LCU session data. `gameMode == JADE`
-is the strongest signal, with queue `3260` and map `453` used as compatibility
-fallbacks. The normalized mode is stored centrally and is cleared when the
-champ-select session ends or contradicting session data is received.
+Rose derives Classic Mode from live LCU session data. `gameMode == JADE` is the
+primary signal, with queue `3260` and map `453` retained as compatibility
+fallbacks.
 
-## ID and Carrier Model
+Inside Rose, champion and skin IDs match the external `classic/` resource tree,
+for example champion `55` and skin `55301`. JADE's `600` prefix belongs only to
+the LCU transport boundary: `60055` and `60055301` are normalized when read and
+restored only when Rose must write a mode-native value back to LCU. Catalog,
+history, randomization, package lookup, naming, and injection use resource IDs.
 
-Classic Mode exposes several IDs for the same visual choice:
+The active carrier is resolved from the live Classic catalog rather than from a
+per-champion fallback table. Before an LCU write, Rose verifies that the carrier
+belongs to the active champion and is present in the current pickable-skin
+catalog.
 
-- The prime champion ID identifies the regular champion.
-- The mode champion ID identifies the Classic entity.
-- The raw LCU skin ID identifies the mode-native skin selection.
-- The resource skin ID identifies the package in the Classic resource library.
-- The visual skin ID identifies the regular skin being projected locally.
+## Native Carousel and Selection
 
-These ID domains are converted through `utils/core/classic_mode_ids.py` rather
-than inferred at individual call sites.
+`ROSE-ClassicWheel` adapts Riot's native JADE skin carousel. Riot's cards remain
+responsible for layout, focus, animation, arrow interaction, and full champion-
+select splash transitions. ClassicWheel supplies the Classic catalog, enforces
+its finite boundaries, projects history or random targets through native
+navigation, and publishes one normalized selection contract to the other
+Classic controls.
 
-Classic champions use different native carriers. Rose resolves a carrier from
-the current LCU catalog when possible and falls back to the versioned matrix:
+Owned Classic skins continue through the official LCU selection path. For an
+unowned target, Rose keeps a valid owned carrier as the server-visible LCU
+selection and stores the requested visual target separately. Automatic
+navigation may pass through owned cards to obtain the native splash transition,
+but those intermediate cards are not accepted as user selections. The target
+splash remains protected until real user navigation, a context exit, or an
+explicit replacement target releases it.
 
-- Skin0 for champions without a Classic Skin301/302 carrier.
-- Skin301 for the supported Skin301 champions.
-- Skin302 for Kayle.
-
-The carrier belongs to the current mode champion and remains the server-visible
-selection throughout local projection.
-
-## Selection and Ownership
-
-Owned Classic skins continue through the official LCU selection path and are not
-locally injected. For an unowned visual selection, Rose keeps the owned
-mode-native carrier in LCU and stores the requested visual skin separately. The
-unowned projected ID is never written to LCU.
-
-Selection generations reject stale events during the final lock transition.
-This prevents delayed UI events from replacing a newer selection or updating a
-different champion.
+Selection generations prevent delayed carousel or WebSocket events from
+replacing a newer target during the final lock transition. Injection consumes
+the accepted projected selection rather than inferring it again from transient
+card state.
 
 ## Classic Plug-ins
 
-Classic controls are provided by separate plug-ins:
+Classic controls are separate plug-ins:
 
-- `ROSE-ClassicWheel` provides the finite Classic skin carousel.
-- `ROSE-ClassicChroma` provides Classic chroma selection and persistence.
-- `ROSE-ClassicHistoric` provides isolated Classic history state and display.
-- `ROSE-ClassicRandom` provides per-champion Classic randomization.
+- `ROSE-ClassicWheel` provides the finite native carousel adapter and shared
+  selection contract.
+- `ROSE-ClassicChroma` renders variants from the Classic catalog and publishes
+  Classic chroma selections.
+- `ROSE-ClassicHistoric` restores and presents mode-scoped history.
+- `ROSE-ClassicRandom` stores per-champion random state and presents its dice
+  control and selected-card marker.
 
-The regular plug-ins are not modified to contain Classic conditionals. Classic
-controls clean themselves up when champ select ends and do not leave overlays or
-state behind for the next match.
+Classic randomization follows the regular-mode probability model: it selects a
+parent skin first, then chooses between that parent and its eligible chromas.
+The visual target is projected during the stable final-countdown window instead
+of moving the carousel as soon as random mode is enabled.
 
-`ROSE-ClassicWheel` ports Catcat's validated JADE adapter for Riot's native
-skin-card carousel. It is unrelated to `ROSE-CustomWheel`, which manages
-third-party mods. The chroma, history, and random plug-ins port Catcat's
-isolated JADE controls as Classic counterparts to Rose's regular features.
-They preserve the corresponding behavior and bridge contracts, but they are
-not source-level forks of the regular Rose plug-ins.
+Classic-specific Forms are not included because the current resource catalog
+does not contain a confirmed target that requires the regular FormsWheel
+behavior.
 
 ## Resource and Injection Flow
 
-Classic packages are resolved only from the `classic/` resource directory. Rose
-does not fall back to the regular `skins/` directory for a Classic selection.
-The downloader and cleanup logic treat `skins/`, `classic/`, and `resources/`
-as separate resource sets.
+Classic packages resolve only from the isolated `classic/` resource directory;
+Rose does not fall back to regular `skins/` packages for a Classic selection.
+Parent skins and nested chroma packages use the same normalized resource IDs
+published by ClassicWheel.
 
-Classic packages may use a mode-native carrier while targeting a different
-visual skin. The converted package therefore retains the required dependency
-closure and redirects model, weapon, animation, VFX, and related asset links to
-the correct carrier. Package preparation restores the native carrier before
-launch and reuses Rose's existing overlay and injection path.
+Before launching an unowned target, Rose restores the validated mode-native
+carrier and reuses the existing overlay and injection pipeline. The projected
+target, carrier, chroma, history state, selection generation, and final
+injection ID are retained as separate values through this boundary.
 
-Rose uses [Alban1911/LeagueSkins](https://github.com/Alban1911/LeagueSkins)
-as its default resource repository. Classic packages are read from that
+Classic peer selections in Party Mode are normalized into the Classic resource
+namespace before package lookup. This path has passed compilation checks but
+has not received formal live-machine validation.
+
+Rose uses [Alban1911/LeagueSkins](https://github.com/Alban1911/LeagueSkins) as
+its default resource repository. Classic packages are read from that
 repository's isolated `classic/` directory.
 
-## Current Limitations
+## Diagnostics
 
-Classic Mode support is working end to end, but some edge cases may still need
-follow-up validation across client versions and less common skin dependency
-graphs. The resource changes are currently maintained separately from Rose and
-can be proposed to the upstream resource repository in a later PR.
+Classic browser messages use searchable `[CLASSIC:<AREA>]` tags and are routed
+through the plug-in log bridge. Backend checkpoints cover catalog acceptance,
+selection and chroma changes, history and random state, LCU carrier state, game
+start identity, package resolution, and the final injection target. Regular-mode
+messages retain their existing prefixes.
+
+## Deferred Work
+
+Full third-party Mod loading in Classic Mode is still experimental and is not
+part of this stable commit series. The excluded work includes Classic-specific
+skin Mod controls, mode-scoped Mod history, and compatibility handling for map,
+font, announcer, UI, voiceover, loading-screen, VFX, SFX, and other Mod
+categories. Those paths require formal validation before they are proposed.
+
+`ROSE-SettingsPanel` integration for Classic skin Mods is also deferred. The
+regular `ROSE-CustomWheel`, `ROSE-CustomSkinSelector`, and SettingsPanel code
+remain available for regular game modes.
