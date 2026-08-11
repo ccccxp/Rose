@@ -1,0 +1,134 @@
+name: Build test portable
+
+on:
+  push:
+    branches:
+      - test-workflow
+    paths:
+      - ".github/BUILD_TEST"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: test-portable-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out test source
+        uses: actions/checkout@v5
+
+      - name: Fetch Classic test resources
+        shell: pwsh
+        run: |
+          git clone --branch main --single-branch --depth 1 --filter=blob:none --sparse https://github.com/ccccxp/LeagueSkins.git _resources/LeagueSkins
+          git -C _resources/LeagueSkins sparse-checkout set classic
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install build dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Build Rose portable directory
+        run: python scripts/build_pyinstaller.py
+
+      - name: Validate and archive portable build
+        shell: pwsh
+        run: |
+          $payload = "dist/Rose"
+          $resourceRepo = "_resources/LeagueSkins"
+          $classicSource = "$resourceRepo/classic"
+          $readme = "packaging/README-CLASSIC-TESTING.txt"
+          if (-not (Test-Path "$payload/Rose.exe" -PathType Leaf)) {
+            throw "Rose.exe was not produced"
+          }
+          if (-not (Get-ChildItem $classicSource -Recurse -Filter *.fantome -File | Select-Object -First 1)) {
+            throw "LeagueSkins Classic archives were not fetched"
+          }
+          if (-not (Test-Path $readme -PathType Leaf)) {
+            throw "Classic testing README was not found"
+          }
+
+          $pluginRoot = @(
+            "$payload/_internal/Pengu Loader/plugins",
+            "$payload/Pengu Loader/plugins"
+          ) | Where-Object { Test-Path $_ -PathType Container } | Select-Object -First 1
+          if (-not $pluginRoot) {
+            throw "Packaged Pengu Loader plug-in directory was not found"
+          }
+
+          $enabledPlugins = @(
+            "ROSE-ClassicChroma",
+            "ROSE-ClassicHistoric",
+            "ROSE-ClassicRandom",
+            "ROSE-ClassicWheel"
+          )
+          foreach ($plugin in $enabledPlugins) {
+            if (-not (Test-Path "$pluginRoot/$plugin/index.js" -PathType Leaf)) {
+              throw "Missing enabled Classic plug-in: $plugin"
+            }
+          }
+
+          $disabledPlugins = @("ROSE-ClassicMods", "ROSE-ClassicSkinSelector")
+          foreach ($plugin in $disabledPlugins) {
+            if (-not (Test-Path "$pluginRoot/$plugin/index.js_" -PathType Leaf)) {
+              throw "Missing disabled Classic Mod component: $plugin"
+            }
+            if (Test-Path "$pluginRoot/$plugin/index.js" -PathType Leaf) {
+              throw "Classic Mod component is unexpectedly enabled: $plugin"
+            }
+          }
+
+          $bundle = "bundle"
+          New-Item -ItemType Directory -Force -Path `
+            artifacts, `
+            "$bundle/Rose", `
+            "$bundle/Classic-Resources/classic" | Out-Null
+          Copy-Item "$payload/*" "$bundle/Rose" -Recurse -Force
+          Copy-Item "$classicSource/*" "$bundle/Classic-Resources/classic" -Recurse -Force
+          Copy-Item $readme "$bundle/README-CLASSIC-TESTING.txt" -Force
+
+          $resourceSha = (git -C $resourceRepo rev-parse HEAD).Trim()
+          $sourceNote = @(
+            "Classic resource repository: https://github.com/ccccxp/LeagueSkins",
+            "Branch: main",
+            "Commit: $resourceSha"
+          ) -join "`n"
+          [IO.File]::WriteAllText(
+            "$bundle/Classic-Resources/RESOURCE-SOURCE.txt",
+            "$sourceNote`n",
+            [Text.UTF8Encoding]::new($false)
+          )
+
+          $shortSha = "${{ github.sha }}".Substring(0, 8)
+          $archive = "artifacts/Rose-test-workflow-classic-test-$shortSha.zip"
+          Compress-Archive -Path "$bundle/*" -DestinationPath $archive -CompressionLevel Optimal
+          $hash = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          $checksum = "$hash  $([IO.Path]::GetFileName($archive))`n"
+          [IO.File]::WriteAllText(
+            "$archive.sha256",
+            $checksum,
+            [Text.UTF8Encoding]::new($false)
+          )
+
+      - name: Upload portable artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: Rose-test-workflow-classic-test-${{ github.run_number }}
+          path: |
+            artifacts/*.zip
+            artifacts/*.sha256
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
