@@ -18,6 +18,11 @@
   let championLocked = false;
   let panelParentRawId = 0;
   let outsideClickHandler = null;
+  let previewGeneration = 0;
+
+  const CHROMA_CLICK_SOUND_URL =
+    "https://127.0.0.1:65236/fe/lol-champ-select/sounds/sfx-cs-button-chromas-click.ogg";
+  let chromaClickAudio = null;
 
   function log(level, message, data = null) {
     const method = level === "error" ? "error" : level === "warn" ? "warn" : "log";
@@ -29,6 +34,14 @@
 
   function api() {
     return window.__roseClassicWheelApi;
+  }
+
+  function playChromaClickSound() {
+    try {
+      chromaClickAudio ||= new Audio(CHROMA_CLICK_SOUND_URL);
+      chromaClickAudio.currentTime = 0;
+      chromaClickAudio.play().catch(() => {});
+    } catch (_) {}
   }
 
   function rawIdOf(skin) {
@@ -240,9 +253,27 @@
 
     const updatePreview = (choice) => {
       name.textContent = choice.name;
-      preview.style.backgroundImage = choice.visualPath
-        ? `url('${choice.visualPath}')`
-        : "none";
+      const candidates = [...new Set([choice.visualPath, visualPathOf(parent, parent)])]
+        .filter(Boolean);
+      const generation = ++previewGeneration;
+      const apply = (index) => {
+        if (generation !== previewGeneration) return;
+        const path = candidates[index];
+        if (!path) {
+          preview.style.backgroundImage = "none";
+          return;
+        }
+        const image = new Image();
+        image.onload = () => {
+          if (generation === previewGeneration) {
+            preview.style.backgroundImage = `url('${path}')`;
+          }
+        };
+        image.onerror = () => apply(index + 1);
+        image.src = path;
+      };
+      preview.style.backgroundImage = "none";
+      apply(0);
     };
     updatePreview(selectedChoice);
 
@@ -282,6 +313,7 @@
       choiceButton.addEventListener("click", (event) => {
         event.preventDefault();
         event.stopPropagation();
+        playChromaClickSound();
         const resourceId = choice.resourceId;
         const rawId = choice.rawId;
         log("info", "Chroma selection submitted", {
@@ -305,6 +337,12 @@
         });
         closePanel();
         render();
+      });
+      choiceButton.addEventListener("keydown", (event) => {
+        if (event.key !== "Enter" && event.key !== " ") return;
+        event.preventDefault();
+        event.stopPropagation();
+        choiceButton.click();
       });
     }
 
