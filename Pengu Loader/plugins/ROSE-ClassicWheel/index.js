@@ -26,7 +26,6 @@
   const CARD_CLASS = "rose-jade-native-card";
   const SELECTED_CLASS = "rose-jade-native-card--selected";
   const UNLOCKED_CLASS = "rose-jade-native-card--unlocked";
-  const EMPTY_CLASS = "rose-jade-native-card--empty";
   const ACTIVE_ROOT_CLASS = "rose-jade-wheel-active";
   const VISUAL_PROTECTION_EVENT = "rose-jade-visual-protection";
   const SELECTION_CHANGE_EVENT = "rose-classic-selection-change";
@@ -34,10 +33,6 @@
   const CATALOG_REFRESH_MS = 2000;
   const USER_NAVIGATION_WINDOW_MS = 6000;
   const nativeFetch = window.fetch.bind(window);
-  const COMPATIBILITY_CLASSES = [
-    CARD_CLASS,
-    SELECTED_CLASS,
-  ];
 
   let bridge = null;
   let active = false;
@@ -60,10 +55,8 @@
   let catalog = [];
   let catalogLoadedAt = 0;
   let adaptedCards = new Set();
-  const originalCardState = new WeakMap();
-  const adaptedCardState = new WeakMap();
-  const projectedImageState = new WeakMap();
   const lockOverlayState = new WeakMap();
+  let footerPresentationState = null;
   let desiredVisualSelection = null;
   let projectedCatalogIndex = -1;
   let nativeProjectionTargetIndex = -1;
@@ -281,9 +274,36 @@
         const ws = api.champSelectBinding.socket._websocket;
         if (!ws || ws.__roseJadeReadProjection) return;
         const parentOnMessage = ws.onmessage;
-        refreshNativeSkinPresentation = (desiredRawSkinId) => {
-          if (!active || !latestNativeSkinSelectorEvent || !desiredRawSkinId) return;
-          const payload = JSON.parse(JSON.stringify(latestNativeSkinSelectorEvent.payload));
+        refreshNativeSkinPresentation = async (desiredRawSkinId) => {
+          if (!active || !desiredRawSkinId) return;
+          let sourceEvent = latestNativeSkinSelectorEvent?.event || null;
+          let sourcePayload = latestNativeSkinSelectorEvent?.payload || null;
+          if (!sourcePayload) {
+            try {
+              const response = await nativeFetch(
+                "/lol-champ-select/v1/skin-selector-info",
+                { credentials: "include" }
+              );
+              if (!response?.ok) return;
+              sourcePayload = [8, "OnJsonApiEvent", {
+                data: await response.json(),
+                eventType: "Update",
+                uri: "/lol-champ-select/v1/skin-selector-info",
+              }];
+              sourceEvent = new MessageEvent("message", {
+                data: JSON.stringify(sourcePayload),
+              });
+              latestNativeSkinSelectorEvent = {
+                event: sourceEvent,
+                payload: sourcePayload,
+              };
+            } catch (error) {
+              log("warn", "Classic selector presentation refresh failed", String(error));
+              return;
+            }
+          }
+          if (!active) return;
+          const payload = JSON.parse(JSON.stringify(sourcePayload));
           const selectedChampionId = numeric(payload[2]?.data?.selectedChampionId);
           if (selectedChampionId && selectedChampionId !== Math.floor(desiredRawSkinId / 1000)) {
             return;
@@ -291,7 +311,7 @@
           payload[2].data.selectedSkinId = desiredRawSkinId;
           parentOnMessage.call(
             ws,
-            cloneWebsocketEvent(latestNativeSkinSelectorEvent.event, payload)
+            cloneWebsocketEvent(sourceEvent, payload)
           );
           log("info", "Refreshed native classic skin presentation", {
             selectedSkinId: desiredRawSkinId,
@@ -610,7 +630,7 @@
       isHiddenModeSkin0,
       available,
       visualPath: String(
-        entry.loadScreenPath || entry.splashPath || entry.uncenteredSplashPath || entry.tilePath || ""
+        entry.tilePath || entry.splashPath || entry.uncenteredSplashPath || entry.loadScreenPath || ""
       ),
       paths: paths.map(normalizeAssetPath).filter(Boolean),
       files: paths.map(assetFileName).filter(Boolean),
@@ -741,10 +761,7 @@
     clearUserNavigation();
     setVisualProtection(entry, reason, visualCarrierProtectionActive);
     scheduleNativeProjection(projectedCatalogIndex, () => {
-      if (
-        active && desiredVisualSelection?.rawSkinId === entry.rawSkinId &&
-        visualCarrierProtectionActive
-      ) {
+      if (active && desiredVisualSelection?.rawSkinId === entry.rawSkinId) {
         refreshNativeSkinPresentation?.(entry.rawSkinId);
       }
       if (typeof onComplete === "function") onComplete();
@@ -928,9 +945,8 @@
     );
 
     // JADE recycles its five card nodes and does not keep DOM order aligned
-    // with their visual left-to-right order. Historic projection can move the
-    // center node to DOM index 0, which used to erase every inferred card on
-    // its left. Always calculate carousel offsets from rendered positions.
+    // with their visual left-to-right order. Sort by the rendered position;
+    // descendant carousel-offset classes can remain stale after projection.
     return cards
       .map((card, domIndex) => {
         const rect = card.getBoundingClientRect();
@@ -960,14 +976,11 @@
 
   function elementSkinId(card) {
     const attributes = ["data-skin-id", "data-champion-skin-id", "skin-id"];
-    const original = originalCardState.get(card);
     for (const attribute of attributes) {
-      const value = numeric(original?.attributes.get(attribute));
+      const value = numeric(card.getAttribute(attribute));
       if (value && value > 0) return value;
     }
 
-    // Ignore the adapter attributes on the card itself. Native JADE recycles
-    // these nodes while moving the carousel, so those values may be stale.
     const nodes = card.querySelectorAll(
       "[data-skin-id], [data-champion-skin-id], [skin-id]"
     );
@@ -1030,32 +1043,8 @@
     return null;
   }
 
-  function rememberOriginalCardState(card) {
-    if (originalCardState.has(card)) return;
-    const attributes = new Map();
-    for (const name of [
-      "data-skin-id",
-      "data-champion-skin-id",
-      "skin-id",
-      "data-rose-lcu-skin-id",
-      "data-rose-resource-skin-id",
-      "data-rose-carousel-offset",
-    ]) {
-      attributes.set(name, card.hasAttribute(name) ? card.getAttribute(name) : null);
-    }
-    originalCardState.set(card, {
-      attributes,
-      classes: new Set(
-        Array.from(card.classList).filter(
-          (name) => COMPATIBILITY_CLASSES.includes(name)
-        )
-      ),
-    });
-  }
-
   function clearCompatibility(card) {
     if (!card) return;
-    adaptedCardState.delete(card);
     card.querySelectorAll(".skins-pane__locked-overlay, .skins-pane__locked-icon").forEach(
       (element) => {
         const original = lockOverlayState.get(element);
@@ -1074,38 +1063,11 @@
         lockOverlayState.delete(element);
       }
     );
-    card.classList.remove(UNLOCKED_CLASS, EMPTY_CLASS);
-    const original = originalCardState.get(card);
-    card.querySelectorAll("img").forEach((image) => {
-      if (image.hasAttribute("data-rose-jade-projected-image")) {
-        image.remove();
-        return;
-      }
-      const state = projectedImageState.get(image);
-      if (!state) return;
-      for (const [name, value] of Object.entries(state)) {
-        if (value === null) image.removeAttribute(name);
-        else image.setAttribute(name, value);
-      }
-      projectedImageState.delete(image);
-    });
-    for (const className of COMPATIBILITY_CLASSES) {
-      if (!original?.classes.has(className)) card.classList.remove(className);
-    }
-    for (const name of [
-      "data-skin-id",
-      "data-rose-lcu-skin-id",
-      "data-rose-resource-skin-id",
-      "data-rose-carousel-offset",
-    ]) {
-      const value = original?.attributes.get(name);
-      if (value === null || value === undefined) card.removeAttribute(name);
-      else card.setAttribute(name, value);
-    }
+    card.classList.remove(CARD_CLASS, SELECTED_CLASS, UNLOCKED_CLASS);
   }
 
-  function unlockNativeCard(card, entry) {
-    if (!card || !entry || entry.available || entry.isBase) return;
+  function unlockNativeCard(card) {
+    if (!card) return;
     card.classList.add(UNLOCKED_CLASS);
     card.querySelectorAll(".skins-pane__locked-overlay, .skins-pane__locked-icon").forEach(
       (element) => {
@@ -1131,76 +1093,22 @@
     );
   }
 
-  function applyCompatibility(
-    card,
-    entry,
-    offset,
-    selected,
-    stabilize = false
-  ) {
-    rememberOriginalCardState(card);
-    const stateKey = entry
-      ? `${entry.rawSkinId}|${entry.resourceSkinId}|${offset}|${selected}|${entry.available}`
-      : `empty|${offset}`;
-    const alreadyAdapted =
-      adaptedCardState.get(card) === stateKey &&
-      card.classList.contains(CARD_CLASS) &&
-      card.classList.contains(SELECTED_CLASS) === selected &&
-      card.getAttribute("data-rose-carousel-offset") === String(offset) &&
-      card.classList.contains(UNLOCKED_CLASS) === !entry?.available &&
-      card.getAttribute("data-rose-lcu-skin-id") === String(entry?.rawSkinId || "");
-    card.classList.toggle("rose-jade-native-card--stabilizing", stabilize);
-    card.classList.toggle(EMPTY_CLASS, !entry);
-    if (alreadyAdapted) {
-      // JADE recycles card nodes and may recreate the native lock overlay
-      // after our first pass. Reapply the idempotent unlock state here.
-      unlockNativeCard(card, entry);
-      adaptedCards.add(card);
-      return;
-    }
-    clearCompatibility(card);
-    if (!entry || card.classList.contains("skins-pane__skin-card--placeholder")) {
-      card.classList.toggle(EMPTY_CLASS, !entry);
+  function applyCompatibility(card, selected) {
+    if (!card) return;
+    if (card.classList.contains("skins-pane__skin-card--placeholder")) {
+      clearCompatibility(card);
       return;
     }
     card.classList.add(CARD_CLASS);
     card.classList.toggle(SELECTED_CLASS, selected);
-    card.setAttribute("data-rose-carousel-offset", String(offset));
-    card.setAttribute("data-rose-resource-skin-id", String(entry.resourceSkinId));
-    card.setAttribute("data-rose-lcu-skin-id", String(entry.rawSkinId));
-    unlockNativeCard(card, entry);
-    adaptedCardState.set(card, stateKey);
+    unlockNativeCard(card);
     adaptedCards.add(card);
-  }
-
-  function projectCardVisual(card, entry) {
-    const visualPath = entry?.visualPath || "";
-    if (!card || !visualPath) return;
-    if (!card.querySelector(".skins-pane__skin-image")) {
-      const image = document.createElement("img");
-      image.className = "skins-pane__skin-image";
-      image.setAttribute("data-rose-jade-projected-image", "true");
-      card.appendChild(image);
-    }
-    card.setAttribute("aria-label", entry.name);
-    card.setAttribute("title", entry.name);
-    for (const image of card.querySelectorAll(".skins-pane__skin-image")) {
-      if (!image.hasAttribute("data-rose-jade-projected-image") && !projectedImageState.has(image)) {
-        projectedImageState.set(image, {
-          src: image.hasAttribute("src") ? image.getAttribute("src") : null,
-          srcset: image.hasAttribute("srcset") ? image.getAttribute("srcset") : null,
-          alt: image.hasAttribute("alt") ? image.getAttribute("alt") : null,
-        });
-      }
-      if (image.getAttribute("src") !== visualPath) image.setAttribute("src", visualPath);
-      image.removeAttribute("srcset");
-      image.setAttribute("alt", entry.name);
-    }
   }
 
   function beginUserNavigation(targetRawSkinId = 0) {
     const targetId = numeric(targetRawSkinId) || 0;
     const targetEntry = targetId ? catalogEntryForRawSkinId(targetId) : null;
+    const hadVisualProtection = visualCarrierProtectionActive;
     if (
       historicRestoreInProgress || pendingHistoricResourceSkinId ||
       lastAppliedHistoricResourceSkinId
@@ -1214,15 +1122,22 @@
       appliedRandomResourceSkinId = 0;
       randomProjectionSuppressed = true;
     }
-    if (targetEntry && !targetEntry.available && !targetEntry.isBase) {
-      visualCarrierProtectionActive = true;
+    if (targetEntry) {
+      visualCarrierProtectionActive = !targetEntry.available && !targetEntry.isBase;
       desiredVisualSelection = targetEntry;
       projectedCatalogIndex = catalog.indexOf(targetEntry);
-      setVisualProtection(targetEntry, "user-navigation-target", true);
-    } else if (visualCarrierProtectionActive && (!targetId || targetEntry?.isBase)) {
+      setVisualProtection(
+        targetEntry,
+        "user-navigation-target",
+        visualCarrierProtectionActive
+      );
+    } else {
       visualCarrierProtectionActive = false;
       projectedCatalogIndex = -1;
+      desiredVisualSelection = null;
       setVisualProtection(null, "user-navigation");
+    }
+    if (hadVisualProtection && !visualCarrierProtectionActive) {
       for (const card of Array.from(adaptedCards)) clearCompatibility(card);
       adaptedCards.clear();
     }
@@ -1293,7 +1208,18 @@
     }
     const direction = nativeProjectionTargetIndex < currentIndex ? "left" : "right";
     const arrow = pane?.parentElement?.querySelector(`.skins-pane__arrow--${direction}`);
-    if (!arrow || arrow.classList.contains("skins-pane__arrow--disabled")) return;
+    if (!arrow || arrow.classList.contains("skins-pane__arrow--disabled")) {
+      log("warn", "Native classic carousel reached a boundary before projection target", {
+        currentIndex,
+        targetIndex: nativeProjectionTargetIndex,
+        direction,
+      });
+      nativeProjectionTargetIndex = -1;
+      nativeProjectionCurrentIndex = -1;
+      nativeProjectionComplete = null;
+      adaptNativeController();
+      return;
+    }
     drivingNativeProjection = true;
     arrow.click();
     drivingNativeProjection = false;
@@ -1304,15 +1230,26 @@
   function syncFooterPresentation(entry) {
     if (!pane || !entry) return;
     const root = pane.parentElement || pane;
-    const title = root.querySelector(".skins-pane__footer .skins-pane__skin-title");
     const subtitle = root.querySelector(".skins-pane__footer .skins-pane__sub-title");
-    if (title && title.textContent !== entry.name) title.textContent = entry.name;
     if (!subtitle) return;
-    const status = entry.available || entry.isBase
-      ? "OWNED"
-      : "UNLOCKED";
-    if (subtitle.textContent !== status) subtitle.textContent = status;
+    if (footerPresentationState?.element !== subtitle) restoreFooterPresentation();
+    if (!footerPresentationState) {
+      footerPresentationState = {
+        element: subtitle,
+        text: subtitle.textContent,
+        unlocked: subtitle.classList.contains("skins-pane__sub-title--unlocked"),
+      };
+    }
+    if (subtitle.textContent !== "UNLOCKED") subtitle.textContent = "UNLOCKED";
     subtitle.classList.add("skins-pane__sub-title--unlocked");
+  }
+
+  function restoreFooterPresentation() {
+    const state = footerPresentationState;
+    footerPresentationState = null;
+    if (!state?.element?.isConnected) return;
+    state.element.textContent = state.text;
+    state.element.classList.toggle("skins-pane__sub-title--unlocked", state.unlocked);
   }
 
   function handleNativePaneClick(event) {
@@ -1323,9 +1260,10 @@
     ) {
       return;
     }
-    const card = event.target?.closest?.(`.${CARD_CLASS}`);
+    const card = event.target?.closest?.(".skins-pane__skin-card");
     if (!card || !pane?.contains(card)) return;
-    const clickRawSkinId = numeric(card.getAttribute("data-rose-lcu-skin-id")) || 0;
+    const clickEntry = matchCardToCatalog(card);
+    const clickRawSkinId = clickEntry?.rawSkinId || 0;
     if (Date.now() <= pointerSelectionUntil && pointerSelectionRawSkinId) {
       if (pointerSelectionCommitted) return;
       const pointerEntry = catalog.find(
@@ -1346,7 +1284,7 @@
       pointerSelectionCommitted = true;
       return;
     }
-    const entry = catalog.find((candidate) => candidate.rawSkinId === clickRawSkinId);
+    const entry = clickEntry;
     if (!entry) return;
     beginUserNavigation(entry.rawSkinId);
     if (card.classList.contains("skins-pane__skin-card--center-tile")) {
@@ -1367,11 +1305,9 @@
       const currentIndex = centerEntry ? catalog.indexOf(centerEntry) : -1;
       const direction = arrow.classList.contains("skins-pane__arrow--left") ? -1 : 1;
       const target = currentIndex >= 0 ? catalog[currentIndex + direction] : null;
-      if (target) {
-        pendingHistoricResourceSkinId = 0;
-        projectedVariantRawSkinId = 0;
-        beginUserNavigation(target.rawSkinId);
-      }
+      pendingHistoricResourceSkinId = 0;
+      projectedVariantRawSkinId = 0;
+      beginUserNavigation(target?.rawSkinId || 0);
       return;
     }
     if (
@@ -1381,12 +1317,11 @@
     ) {
       return;
     }
-    const card = event.target?.closest?.(`.${CARD_CLASS}`);
+    const card = event.target?.closest?.(".skins-pane__skin-card");
     if (card && pane?.contains(card)) {
       pendingHistoricResourceSkinId = 0;
       projectedVariantRawSkinId = 0;
-      const rawSkinId = numeric(card.getAttribute("data-rose-lcu-skin-id")) || 0;
-      const entry = catalog.find((candidate) => candidate.rawSkinId === rawSkinId);
+      const entry = matchCardToCatalog(card);
       if (!entry) return;
       pointerSelectionRawSkinId = entry.rawSkinId;
       pointerSelectionUntil = Date.now() + 1500;
@@ -1467,18 +1402,11 @@
       centerCard.appendChild(overlay);
     }
     ensureHistoryAnchor(centerCard);
-    const centerSlot = cards.indexOf(centerCard);
     const visualCenterEntry = matchCardToCatalog(centerCard);
-    const selectedCatalogEntry = catalogEntryForRawSkinId(selectedRawSkinId);
-    let selectedIndex = selectedCatalogEntry ? catalog.indexOf(selectedCatalogEntry) : -1;
-    if (selectedIndex < 0) {
-      selectedIndex = catalog.findIndex(
-        (entry) => entry.resourceSkinId === selectedResourceSkinId
-      );
-    }
-    if (selectedIndex < 0) selectedIndex = 0;
-    let centerEntry = visualCenterEntry || catalog[selectedIndex] || null;
-    if (visualCenterEntry) selectedIndex = catalog.indexOf(visualCenterEntry);
+    const selectedCatalogEntry = catalogEntryForRawSkinId(selectedRawSkinId)
+      || catalog.find((entry) => entry.resourceSkinId === selectedResourceSkinId)
+      || null;
+    const centerEntry = visualCenterEntry || selectedCatalogEntry;
     const navigationPending =
       pendingUserNavigation && Date.now() <= pendingUserNavigationUntil;
     if (pendingUserNavigation && !navigationPending) clearUserNavigation();
@@ -1494,39 +1422,36 @@
       centerEntry &&
       pendingUserTargetRawSkinId !== centerEntry.rawSkinId
     );
-    const isAutomaticLcuRollback = Boolean(
+    const isIntermediateNativeProjection = Boolean(
+      nativeProjectionTargetIndex >= 0 &&
+      centerEntry &&
+      catalog.indexOf(centerEntry) !== nativeProjectionTargetIndex
+    );
+    const isAutomaticSelectionDrift = Boolean(
       centerEntry &&
       desiredVisualSelection &&
       desiredVisualSelection.rawSkinId !== centerEntry.rawSkinId &&
       visualCarrierProtectionActive &&
-      !followsUserNavigation
+      !followsUserNavigation &&
+      !navigationPending &&
+      nativeProjectionTargetIndex < 0
     );
-    if (isAutomaticLcuRollback) {
-      centerEntry = desiredVisualSelection;
-      selectedIndex = projectedCatalogIndex >= 0
-        ? projectedCatalogIndex
-        : catalog.indexOf(centerEntry);
-    }
-    const projectionActive = Boolean(
-      desiredVisualSelection &&
-      projectedCatalogIndex >= 0 &&
-      visualCarrierProtectionActive &&
-      !followsUserNavigation
-    );
-    if (projectionActive) {
-      centerEntry = desiredVisualSelection;
-      selectedIndex = projectedCatalogIndex;
-    }
-    const usedRawSkinIds = new Set(centerEntry ? [centerEntry.rawSkinId] : []);
-
     if (centerEntry && centerEntry.rawSkinId !== lastVisualCenterRawSkinId) {
       lastVisualCenterRawSkinId = centerEntry.rawSkinId;
-      if (isAutomaticLcuRollback) {
-        log("info", "Ignored automatic classic skin rollback", {
-          desiredResourceSkinId: desiredVisualSelection.resourceSkinId,
-          lcuResourceSkinId: visualCenterEntry?.resourceSkinId || selectedResourceSkinId,
-        });
-      } else if (!isIntermediateUserNavigation) {
+      if (isAutomaticSelectionDrift) {
+        if (refreshNativeSkinPresentation) {
+          refreshNativeSkinPresentation(desiredVisualSelection.rawSkinId);
+          log("info", "Reprojected classic selection after native drift", {
+            observedRawSkinId: centerEntry.rawSkinId,
+            desiredRawSkinId: desiredVisualSelection.rawSkinId,
+          });
+        } else {
+          log("warn", "Native classic selector projection is unavailable", {
+            observedRawSkinId: centerEntry.rawSkinId,
+            desiredRawSkinId: desiredVisualSelection.rawSkinId,
+          });
+        }
+      } else if (!isIntermediateUserNavigation && !isIntermediateNativeProjection) {
         visualCarrierProtectionActive = !centerEntry.available && !centerEntry.isBase;
         setVisualProtection(
           centerEntry,
@@ -1552,47 +1477,19 @@
       }
     }
 
-    const mapped = [];
-    for (let slot = 0; slot < cards.length; slot += 1) {
-      const card = cards[slot];
+    for (const card of cards) {
       if (card.classList.contains("skins-pane__skin-card--placeholder")) {
         clearCompatibility(card);
         continue;
       }
-      const directMatch = projectionActive ? null : matchCardToCatalog(card);
-      const inferredMatch = catalog[selectedIndex + (slot - centerSlot)] || null;
-      let entry = centerEntry || directMatch;
-      if (card !== centerCard) {
-        entry = [inferredMatch, directMatch].find(
-          (candidate) => candidate && !usedRawSkinIds.has(candidate.rawSkinId)
-        ) || null;
-      }
-      const offset = slot - centerSlot;
-      applyCompatibility(
-        card,
-        entry,
-        offset,
-        card === centerCard,
-        isAutomaticLcuRollback
-      );
-      if (projectionActive && entry) {
-        projectCardVisual(card, entry);
-      }
-      if (entry) {
-        usedRawSkinIds.add(entry.rawSkinId);
-        mapped.push(`${offset}:${entry.rawSkinId}:${entry.available ? "official" : "unlocked"}`);
-      }
+      // Native JADE owns the card content and position. ClassicWheel only
+      // removes the visual lock state and keeps its own center marker for
+      // companion plugins.
+      applyCompatibility(card, card === centerCard);
     }
     syncFooterPresentation(centerEntry);
-    const footer = pane.parentElement?.querySelector(".skins-pane__footer");
-    const leftArrow = pane.parentElement?.querySelector(".skins-pane__arrow--left");
-    const rightArrow = pane.parentElement?.querySelector(".skins-pane__arrow--right");
-    if (projectionActive && footer) {
-      leftArrow?.classList.toggle("skins-pane__arrow--disabled", selectedIndex <= 0);
-      rightArrow?.classList.toggle("skins-pane__arrow--disabled", selectedIndex >= catalog.length - 1);
-    }
 
-    const layoutKey = `${cards.length}|${catalog.length}|${selectedRawSkinId}|${mapped.join(",")}`;
+    const layoutKey = `${cards.length}|${catalog.length}|${selectedRawSkinId}|${centerEntry?.rawSkinId || 0}`;
     if (layoutKey !== lastLayoutKey) {
       lastLayoutKey = layoutKey;
       log("info", "Native classic skin selector adapted", {
@@ -1603,8 +1500,9 @@
         visualCenterRawSkinId: centerEntry?.rawSkinId || null,
         visualCenterResourceSkinId: centerEntry?.resourceSkinId || null,
         nativeCenterRawSkinId: visualCenterEntry?.rawSkinId || null,
-        visualProjectionActive: isAutomaticLcuRollback,
-        mapped,
+        visualProjectionActive: false,
+        nativeContentPreserved: true,
+        frontendUnlocked: true,
       });
     }
   }
@@ -1751,12 +1649,6 @@
         cursor: pointer !important;
       }
 
-      .${CARD_CLASS}.rose-jade-native-card--stabilizing,
-      .${CARD_CLASS}.rose-jade-native-card--stabilizing * {
-        transition: none !important;
-        animation: none !important;
-      }
-
       .${UNLOCKED_CLASS} .skins-pane__locked-overlay,
       .${UNLOCKED_CLASS} .skins-pane__locked-icon {
         display: none !important;
@@ -1771,18 +1663,6 @@
         pointer-events: none !important;
       }
 
-      .${EMPTY_CLASS} {
-        visibility: hidden !important;
-        pointer-events: none !important;
-        border-color: transparent !important;
-      }
-
-      .${ACTIVE_ROOT_CLASS} .champion-select-center-container--picking-skins
-        .skins-pane__skin-card--placeholder {
-        border: none !important;
-        visibility: hidden !important;
-        pointer-events: none !important;
-      }
     `;
     document.head.appendChild(style);
   }
@@ -1790,6 +1670,7 @@
   function cleanupDom() {
     for (const card of Array.from(adaptedCards)) clearCompatibility(card);
     adaptedCards.clear();
+    restoreFooterPresentation();
     pane?.removeEventListener("click", handleNativePaneClick, true);
     document.querySelectorAll(`.${HOST_CLASS}`).forEach((element) => {
       element.classList.remove(HOST_CLASS);
@@ -1953,6 +1834,7 @@
       return;
     }
     bridge = await waitForBridge();
+    installNativeWebsocketProjection();
     bridge.subscribe("phase-change", handlePhaseChange);
     bridge.subscribe("champion-locked", () => {
       if (active) refreshSelection(true);
