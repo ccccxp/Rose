@@ -137,6 +137,34 @@ class MessageHandler:
         self.mod_storage = mod_storage or ModStorageService()
         self.injection_manager = injection_manager
 
+    def _historic_scope(self) -> str:
+        from utils.core.historic import historic_scope_for_state
+
+        return historic_scope_for_state(self.shared_state)
+
+    def _drop_mismatched_mod_selections(self) -> None:
+        scope = self._historic_scope()
+
+        def matches(value) -> bool:
+            return isinstance(value, dict) and value.get("scope", "regular") == scope
+
+        for attr in (
+            "selected_custom_mod",
+            "selected_map_mod",
+            "selected_font_mod",
+            "selected_announcer_mod",
+            "selected_other_mod",
+        ):
+            value = getattr(self.shared_state, attr, None)
+            if value and not matches(value):
+                setattr(self.shared_state, attr, None)
+
+        selections = getattr(self.shared_state, "selected_other_mods", None)
+        if isinstance(selections, list):
+            self.shared_state.selected_other_mods = [
+                value for value in selections if matches(value)
+            ]
+
     def _is_valid_local_league_path(self, game_path: str) -> bool:
         """Validate a League install path without touching UNC/network paths."""
         if not isinstance(game_path, str):
@@ -1126,6 +1154,7 @@ class MessageHandler:
     
     def _handle_request_skin_mods(self, payload: dict) -> None:
         """Return the list of custom mods for a champion (all skins)"""
+        self._drop_mismatched_mod_selections()
         if not self.mod_storage:
             return
 
@@ -1187,7 +1216,9 @@ class MessageHandler:
         try:
             from utils.core.historic import get_historic_skin_for_champion, is_custom_mod_path, get_custom_mod_path
             if champion_id:
-                historic_value = get_historic_skin_for_champion(champion_id)
+                historic_value = get_historic_skin_for_champion(
+                    champion_id, self._historic_scope()
+                )
                 if historic_value and is_custom_mod_path(historic_value):
                     historic_mod_path = get_custom_mod_path(historic_value)
                     historic_identifier = self._normalize_mod_identifier(historic_mod_path)
@@ -1321,6 +1352,7 @@ class MessageHandler:
     
     def _handle_request_maps(self, payload: dict) -> None:
         """Return the list of maps"""
+        self._drop_mismatched_mod_selections()
         if not self.mod_storage:
             return
         
@@ -1334,7 +1366,7 @@ class MessageHandler:
         historic_map_path = None
         try:
             from utils.core.mod_historic import get_historic_mod
-            historic_map_path = get_historic_mod("map")
+            historic_map_path = get_historic_mod("map", self._historic_scope())
         except Exception:
             pass
         
@@ -1352,6 +1384,7 @@ class MessageHandler:
     
     def _handle_request_fonts(self, payload: dict) -> None:
         """Return the list of fonts"""
+        self._drop_mismatched_mod_selections()
         if not self.mod_storage:
             return
         
@@ -1365,7 +1398,7 @@ class MessageHandler:
         historic_font_path = None
         try:
             from utils.core.mod_historic import get_historic_mod
-            historic_font_path = get_historic_mod("font")
+            historic_font_path = get_historic_mod("font", self._historic_scope())
         except Exception:
             pass
         
@@ -1383,6 +1416,7 @@ class MessageHandler:
     
     def _handle_request_announcers(self, payload: dict) -> None:
         """Return the list of announcers"""
+        self._drop_mismatched_mod_selections()
         if not self.mod_storage:
             return
         
@@ -1396,7 +1430,7 @@ class MessageHandler:
         historic_announcer_path = None
         try:
             from utils.core.mod_historic import get_historic_mod
-            historic_announcer_path = get_historic_mod("announcer")
+            historic_announcer_path = get_historic_mod("announcer", self._historic_scope())
         except Exception:
             pass
         
@@ -1414,6 +1448,7 @@ class MessageHandler:
     
     def _handle_request_others(self, payload: dict) -> None:
         """Return the list of others"""
+        self._drop_mismatched_mod_selections()
         if not self.mod_storage:
             return
         
@@ -1427,7 +1462,7 @@ class MessageHandler:
         historic_other_paths = None
         try:
             from utils.core.mod_historic import get_historic_mod
-            historic_other_paths = get_historic_mod("other")
+            historic_other_paths = get_historic_mod("other", self._historic_scope())
             # Convert to list if it's a single string (legacy format)
             if isinstance(historic_other_paths, str):
                 historic_other_paths = [historic_other_paths]
@@ -1548,11 +1583,14 @@ class MessageHandler:
                     champ_id = self.shared_state.selected_custom_mod.get("champion_id")
                     rel_path = self.shared_state.selected_custom_mod.get("relative_path")
                     if champ_id and rel_path:
-                        historic_value = get_historic_skin_for_champion(int(champ_id))
+                        history_scope = self._historic_scope()
+                        historic_value = get_historic_skin_for_champion(
+                            int(champ_id), history_scope
+                        )
                         if historic_value is not None and is_custom_mod_path(historic_value):
                             historic_path = get_custom_mod_path(historic_value)
                             if historic_path and historic_path.replace("\\", "/") == str(rel_path).replace("\\", "/"):
-                                clear_historic_entry(int(champ_id))
+                                clear_historic_entry(int(champ_id), history_scope)
                                 log.info("[HISTORIC] Cleared saved custom mod for champion %s", champ_id)
                 except Exception as exc:
                     log.debug("[HISTORIC] Failed to clear saved custom mod on deselect: %s", exc)
@@ -1728,6 +1766,7 @@ class MessageHandler:
 
             # The explicitly selected skin/chroma folder is the target.
             self.shared_state.selected_custom_mod = {
+                "scope": self._historic_scope(),
                 "skin_id": int(skin_id),
                 "storage_skin_id": selected_mod.skin_id,
                 "target_skin_ids": sorted(self._get_entry_target_skin_ids(selected_mod)),
@@ -1814,11 +1853,14 @@ class MessageHandler:
             champ_id = self.shared_state.selected_custom_mod.get("champion_id")
             rel_path = self.shared_state.selected_custom_mod.get("relative_path")
             if champ_id and rel_path:
-                historic_value = get_historic_skin_for_champion(int(champ_id))
+                history_scope = self._historic_scope()
+                historic_value = get_historic_skin_for_champion(
+                    int(champ_id), history_scope
+                )
                 if historic_value is not None and is_custom_mod_path(historic_value):
                     historic_path = get_custom_mod_path(historic_value)
                     if historic_path and historic_path.replace("\\", "/") == str(rel_path).replace("\\", "/"):
-                        clear_historic_entry(int(champ_id))
+                        clear_historic_entry(int(champ_id), history_scope)
                         log.info("[Dismiss] Cleared historic entry for champion %s", champ_id)
         except Exception as exc:
             log.debug("[Dismiss] Failed to clear historic entry: %s", exc)
@@ -1847,12 +1889,14 @@ class MessageHandler:
                 or self.shared_state.hovered_champ_id
             )
             historic_value = (
-                get_historic_skin_for_champion(int(champ_id))
+                get_historic_skin_for_champion(
+                    int(champ_id), self._historic_scope()
+                )
                 if champ_id is not None
                 else None
             )
             if champ_id is not None and is_custom_mod_path(historic_value):
-                clear_historic_entry(int(champ_id))
+                clear_historic_entry(int(champ_id), self._historic_scope())
                 log.info("[Dismiss] Cleared custom historic entry for champion %s", champ_id)
         except Exception as exc:
             log.debug("[Dismiss] Failed to clear custom historic entry: %s", exc)
@@ -1886,7 +1930,7 @@ class MessageHandler:
                 # Clear historic mod when deselected
                 try:
                     from utils.core.mod_historic import clear_historic_mod
-                    clear_historic_mod("map")
+                    clear_historic_mod("map", self._historic_scope())
                     log.debug("[MOD_HISTORIC] Cleared historic map mod")
                 except Exception as e:
                     log.debug(f"[MOD_HISTORIC] Failed to clear historic map mod: {e}")
@@ -1955,6 +1999,7 @@ class MessageHandler:
 
             # Store selected map mod in shared state for injection
             self.shared_state.selected_map_mod = {
+                "scope": self._historic_scope(),
                 "mod_name": selected_mod.mod_name,
                 "mod_path": str(selected_mod.path),
                 "mod_folder_name": mod_folder_name,
@@ -1986,7 +2031,7 @@ class MessageHandler:
                 # Clear historic mod when deselected
                 try:
                     from utils.core.mod_historic import clear_historic_mod
-                    clear_historic_mod("font")
+                    clear_historic_mod("font", self._historic_scope())
                     log.debug("[MOD_HISTORIC] Cleared historic font mod")
                 except Exception as e:
                     log.debug(f"[MOD_HISTORIC] Failed to clear historic font mod: {e}")
@@ -2054,6 +2099,7 @@ class MessageHandler:
 
             # Store selected font mod in shared state for injection
             self.shared_state.selected_font_mod = {
+                "scope": self._historic_scope(),
                 "mod_name": selected_mod.mod_name,
                 "mod_path": str(selected_mod.path),
                 "mod_folder_name": mod_folder_name,
@@ -2085,7 +2131,7 @@ class MessageHandler:
                 # Clear historic mod when deselected
                 try:
                     from utils.core.mod_historic import clear_historic_mod
-                    clear_historic_mod("announcer")
+                    clear_historic_mod("announcer", self._historic_scope())
                     log.debug("[MOD_HISTORIC] Cleared historic announcer mod")
                 except Exception as e:
                     log.debug(f"[MOD_HISTORIC] Failed to clear historic announcer mod: {e}")
@@ -2153,6 +2199,7 @@ class MessageHandler:
 
             # Store selected announcer mod in shared state for injection
             self.shared_state.selected_announcer_mod = {
+                "scope": self._historic_scope(),
                 "mod_name": selected_mod.mod_name,
                 "mod_path": str(selected_mod.path),
                 "mod_folder_name": mod_folder_name,
@@ -2211,9 +2258,9 @@ class MessageHandler:
 
                 for cat, paths in by_cat.items():
                     if paths:
-                        write_historic_mod(cat, paths)
+                        write_historic_mod(cat, paths, self._historic_scope())
                     else:
-                        clear_historic_mod(cat)
+                        clear_historic_mod(cat, self._historic_scope())
             except Exception as e:
                 log.debug(f"[MOD_HISTORIC] Failed to update category historic after deselect: {e}")
             return
@@ -2273,6 +2320,7 @@ class MessageHandler:
 
             # Store selected other mod in shared state for injection (add to list)
             mod_info = {
+                "scope": self._historic_scope(),
                 "mod_name": selected_mod.mod_name,
                 "mod_path": str(selected_mod.path),
                 "mod_folder_name": mod_folder_name,
@@ -2311,9 +2359,9 @@ class MessageHandler:
 
                 for cat, paths in by_cat.items():
                     if paths:
-                        write_historic_mod(cat, paths)
+                        write_historic_mod(cat, paths, self._historic_scope())
                     else:
-                        clear_historic_mod(cat)
+                        clear_historic_mod(cat, self._historic_scope())
             except Exception as e:
                 log.debug(f"[MOD_HISTORIC] Failed to update category historic after select: {e}")
 
@@ -2324,6 +2372,7 @@ class MessageHandler:
 
     def _handle_request_category_mods(self, payload: dict) -> None:
         """Return the list of mods for a specific top-level category under %LOCALAPPDATA%\\Rose\\mods."""
+        self._drop_mismatched_mod_selections()
         if not self.mod_storage:
             return
 
@@ -2348,7 +2397,7 @@ class MessageHandler:
         historic_paths = None
         try:
             from utils.core.mod_historic import get_historic_mod
-            historic_paths = get_historic_mod(str(category))
+            historic_paths = get_historic_mod(str(category), self._historic_scope())
             if isinstance(historic_paths, str):
                 historic_paths = [historic_paths]
         except Exception:

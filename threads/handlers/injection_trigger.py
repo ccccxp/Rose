@@ -51,6 +51,27 @@ class InjectionTrigger:
         self.injection_manager = injection_manager
         self.skin_scraper = skin_scraper
 
+    def _drop_mismatched_mod_selections(self, scope: str) -> None:
+        def matches(value) -> bool:
+            return isinstance(value, dict) and value.get("scope", "regular") == scope
+
+        for attr in (
+            "selected_custom_mod",
+            "selected_map_mod",
+            "selected_font_mod",
+            "selected_announcer_mod",
+            "selected_other_mod",
+        ):
+            value = getattr(self.state, attr, None)
+            if value and not matches(value):
+                setattr(self.state, attr, None)
+
+        selections = getattr(self.state, "selected_other_mods", None)
+        if isinstance(selections, list):
+            self.state.selected_other_mods = [
+                value for value in selections if matches(value)
+            ]
+
     def _get_compatible_skin_ids(self, skin_id: int | str) -> set[int]:
         """Return a requested skin plus its explicitly known chroma base."""
         try:
@@ -154,6 +175,11 @@ class InjectionTrigger:
             log.error(f"   Loadout Timer: #{ticker_id}")
             log.error("=" * LOG_SEPARATOR_WIDTH)
             return
+
+        from utils.core.historic import historic_scope_for_state
+
+        history_scope = historic_scope_for_state(self.state)
+        self._drop_mismatched_mod_selections(history_scope)
         
         locked_champ_id = self.state.locked_champ_id or self.state.hovered_champ_id
         # In Classic Mode the LCU selection is a legal carrier, while the Rose
@@ -395,6 +421,7 @@ class InjectionTrigger:
                             ):
                                 target_skin_id = next(iter(sorted(target_skin_ids)), int(champion_id) * 1000)
                             self.state.selected_custom_mod = {
+                                "scope": history_scope,
                                 "skin_id": int(target_skin_id),
                                 "storage_skin_id": selected_mod_entry.skin_id,
                                 "target_skin_ids": sorted(target_skin_ids),
@@ -426,7 +453,7 @@ class InjectionTrigger:
                     from injection.mods.storage import ModStorageService
 
                     mod_storage = ModStorageService()
-                    historic_mods = load_mod_historic()
+                    historic_mods = load_mod_historic(history_scope)
                     
                     # Helper function to auto-select a historic mod
                     def auto_select_historic_mod(mod_type: str, category_attr: str):
@@ -549,10 +576,10 @@ class InjectionTrigger:
                                     from utils.core.mod_historic import write_historic_mod
                                     if valid_other_mods:
                                         valid_paths = [mod["relative_path"] for mod in valid_other_mods]
-                                        write_historic_mod("other", valid_paths)
+                                        write_historic_mod("other", valid_paths, history_scope)
                                     else:
                                         from utils.core.mod_historic import clear_historic_mod
-                                        clear_historic_mod("other")
+                                        clear_historic_mod("other", history_scope)
                                 except Exception as e:
                                     log.debug(f"[HISTORIC] Failed to update historic other mods: {e}")
                             
@@ -593,7 +620,7 @@ class InjectionTrigger:
                                 # Clear the historic mod entry since the mod no longer exists
                                 try:
                                     from utils.core.mod_historic import clear_historic_mod
-                                    clear_historic_mod(mod_type)
+                                    clear_historic_mod(mod_type, history_scope)
                                     log.debug(f"[HISTORIC] Cleared historic {mod_type} mod entry")
                                 except Exception as e:
                                     log.debug(f"[HISTORIC] Failed to clear historic {mod_type} mod entry: {e}")
@@ -622,6 +649,7 @@ class InjectionTrigger:
                             
                             # Store selected mod in shared state
                             setattr(self.state, selected_attr, {
+                                "scope": history_scope,
                                 "mod_name": selected_mod_entry.mod_name,
                                 "mod_path": str(selected_mod_entry.path),
                                 "mod_folder_name": mod_folder_name,
@@ -1044,25 +1072,25 @@ class InjectionTrigger:
                                     return False
                             
                             # Check and clean map mod
-                            historic_map_path = get_historic_mod("map")
+                            historic_map_path = get_historic_mod("map", history_scope)
                             if historic_map_path and not mod_file_exists(historic_map_path):
-                                clear_historic_mod("map")
+                                clear_historic_mod("map", history_scope)
                                 log.info(f"[MOD_HISTORIC] Cleaned missing map mod from historic: {historic_map_path}")
                             
                             # Check and clean font mod
-                            historic_font_path = get_historic_mod("font")
+                            historic_font_path = get_historic_mod("font", history_scope)
                             if historic_font_path and not mod_file_exists(historic_font_path):
-                                clear_historic_mod("font")
+                                clear_historic_mod("font", history_scope)
                                 log.info(f"[MOD_HISTORIC] Cleaned missing font mod from historic: {historic_font_path}")
                             
                             # Check and clean announcer mod
-                            historic_announcer_path = get_historic_mod("announcer")
+                            historic_announcer_path = get_historic_mod("announcer", history_scope)
                             if historic_announcer_path and not mod_file_exists(historic_announcer_path):
-                                clear_historic_mod("announcer")
+                                clear_historic_mod("announcer", history_scope)
                                 log.info(f"[MOD_HISTORIC] Cleaned missing announcer mod from historic: {historic_announcer_path}")
                             
                             # Check and clean other mods
-                            historic_other_paths = get_historic_mod("other")
+                            historic_other_paths = get_historic_mod("other", history_scope)
                             if historic_other_paths:
                                 if isinstance(historic_other_paths, str):
                                     historic_other_paths = [historic_other_paths]
@@ -1074,11 +1102,11 @@ class InjectionTrigger:
                                 if len(cleaned_paths) != len(historic_other_paths):
                                     from utils.core.mod_historic import write_historic_mod
                                     if cleaned_paths:
-                                        write_historic_mod("other", cleaned_paths)
+                                        write_historic_mod("other", cleaned_paths, history_scope)
                                         removed_count = len(historic_other_paths) - len(cleaned_paths)
                                         log.info(f"[MOD_HISTORIC] Cleaned {removed_count} missing other mod(s) from historic")
                                     else:
-                                        clear_historic_mod("other")
+                                        clear_historic_mod("other", history_scope)
                                         log.info(f"[MOD_HISTORIC] Cleared historic other mods (all were missing)")
                         except Exception as e:
                             log.debug(f"[MOD_HISTORIC] Failed to clean up missing mods from historic: {e}")
@@ -1281,6 +1309,9 @@ class InjectionTrigger:
                 or self.state.hovered_champ_id
             )
             current_mode = getattr(self.state, "current_game_mode", None)
+            from utils.core.historic import historic_scope_for_state
+
+            history_scope = historic_scope_for_state(self.state)
             classic_generation = getattr(
                 self.state, "classic_selection_generation", None
             )
@@ -1601,28 +1632,28 @@ class InjectionTrigger:
                 
                 # Clean up map mod if it was missing
                 if missing_map_mod_path:
-                    historic_map_path = get_historic_mod("map")
+                    historic_map_path = get_historic_mod("map", history_scope)
                     if historic_map_path and normalize_path(historic_map_path) == normalize_path(missing_map_mod_path):
-                        clear_historic_mod("map")
+                        clear_historic_mod("map", history_scope)
                         log.info(f"[MOD_HISTORIC] Cleaned missing map mod from historic: {missing_map_mod_path}")
                 
                 # Clean up font mod if it was missing
                 if missing_font_mod_path:
-                    historic_font_path = get_historic_mod("font")
+                    historic_font_path = get_historic_mod("font", history_scope)
                     if historic_font_path and normalize_path(historic_font_path) == normalize_path(missing_font_mod_path):
-                        clear_historic_mod("font")
+                        clear_historic_mod("font", history_scope)
                         log.info(f"[MOD_HISTORIC] Cleaned missing font mod from historic: {missing_font_mod_path}")
                 
                 # Clean up announcer mod if it was missing
                 if missing_announcer_mod_path:
-                    historic_announcer_path = get_historic_mod("announcer")
+                    historic_announcer_path = get_historic_mod("announcer", history_scope)
                     if historic_announcer_path and normalize_path(historic_announcer_path) == normalize_path(missing_announcer_mod_path):
-                        clear_historic_mod("announcer")
+                        clear_historic_mod("announcer", history_scope)
                         log.info(f"[MOD_HISTORIC] Cleaned missing announcer mod from historic: {missing_announcer_mod_path}")
                 
                 # Clean up other mods (can be multiple) - same pattern as above
                 if missing_other_mod_paths:
-                    historic_other_paths = get_historic_mod("other")
+                    historic_other_paths = get_historic_mod("other", history_scope)
                     if historic_other_paths:
                         # Convert to list if needed
                         if isinstance(historic_other_paths, str):
@@ -1641,11 +1672,11 @@ class InjectionTrigger:
                         # Update historic if paths were removed
                         if len(cleaned_paths) != len(historic_other_paths):
                             if cleaned_paths:
-                                write_historic_mod("other", cleaned_paths)
+                                write_historic_mod("other", cleaned_paths, history_scope)
                                 removed_count = len(historic_other_paths) - len(cleaned_paths)
                                 log.info(f"[MOD_HISTORIC] Cleaned {removed_count} missing other mod(s) from historic")
                             else:
-                                clear_historic_mod("other")
+                                clear_historic_mod("other", history_scope)
                                 log.info(f"[MOD_HISTORIC] Cleared historic other mods (all were missing)")
             except Exception as e:
                 log.debug(f"[MOD_HISTORIC] Failed to clean up missing mods from historic: {e}")
@@ -1711,19 +1742,19 @@ class InjectionTrigger:
                     # Store map mod if selected
                     selected_map_mod = getattr(self.state, 'selected_map_mod', None)
                     if selected_map_mod and selected_map_mod.get("relative_path"):
-                        write_historic_mod("map", selected_map_mod["relative_path"])
+                        write_historic_mod("map", selected_map_mod["relative_path"], history_scope)
                         log.debug(f"[MOD_HISTORIC] Stored map mod: {selected_map_mod['relative_path']}")
                     
                     # Store font mod if selected
                     selected_font_mod = getattr(self.state, 'selected_font_mod', None)
                     if selected_font_mod and selected_font_mod.get("relative_path"):
-                        write_historic_mod("font", selected_font_mod["relative_path"])
+                        write_historic_mod("font", selected_font_mod["relative_path"], history_scope)
                         log.debug(f"[MOD_HISTORIC] Stored font mod: {selected_font_mod['relative_path']}")
                     
                     # Store announcer mod if selected
                     selected_announcer_mod = getattr(self.state, 'selected_announcer_mod', None)
                     if selected_announcer_mod and selected_announcer_mod.get("relative_path"):
-                        write_historic_mod("announcer", selected_announcer_mod["relative_path"])
+                        write_historic_mod("announcer", selected_announcer_mod["relative_path"], history_scope)
                         log.debug(f"[MOD_HISTORIC] Stored announcer mod: {selected_announcer_mod['relative_path']}")
                     
                     # Store other mods if selected (store all for historic)
@@ -1737,7 +1768,7 @@ class InjectionTrigger:
                         # Store all mods for historic (list format)
                         other_mod_paths = [mod.get("relative_path") for mod in selected_other_mods if mod.get("relative_path")]
                         if other_mod_paths:
-                            write_historic_mod("other", other_mod_paths)
+                            write_historic_mod("other", other_mod_paths, history_scope)
                             log.debug(f"[MOD_HISTORIC] Stored {len(other_mod_paths)} other mod(s): {', '.join(other_mod_paths)}")
                 except Exception as e:
                     log.debug(f"[MOD_HISTORIC] Failed to store mod selections: {e}")
