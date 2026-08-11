@@ -866,7 +866,8 @@
   }
 
   function randomProjectionReady() {
-    return phase === "FINALIZATION" || phase === "GameStart";
+    return phase === "FINALIZATION" || phase === "GameStart" ||
+      document.querySelector(".champion-select.timer-less-than-11-seconds") !== null;
   }
 
   function applyPendingRandomVisualSelection() {
@@ -889,7 +890,7 @@
     }
     if (!projectResourceSelection(pendingRandomResourceSkinId, "random-state")) return;
     appliedRandomResourceSkinId = pendingRandomResourceSkinId;
-    log("info", "Classic random result projected during finalization", {
+    log("info", "Classic random result projected during finalization window", {
       rawSkinId: selection.rawSkinId,
       resourceSkinId: resourceSkinId(selection.rawSkinId),
     });
