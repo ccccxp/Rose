@@ -76,6 +76,9 @@
   let lastVisualCenterRawSkinId = 0;
   let lastLayoutKey = "";
   let lastVisualProtectionKey = "";
+  let lastReadRewriteKey = "";
+  let refreshNativeSkinPresentation = null;
+  let latestNativeSkinSelectorEvent = null;
   let lastCatalogSyncKey = "";
   let visualProtectionClearTimer = null;
 
@@ -186,6 +189,36 @@
     return String(init?.method || input?.method || "GET").toUpperCase();
   }
 
+  function rewriteSessionSelection(data, desiredRawSkinId) {
+    if (!data || typeof data !== "object") return false;
+    const localCellId = numeric(data.localPlayerCellId);
+    if (localCellId === null || !Array.isArray(data.myTeam)) return false;
+    const localPlayer = data.myTeam.find(
+      (player) => numeric(player?.cellId) === localCellId
+    );
+    if (!localPlayer || numeric(localPlayer.selectedSkinId) === desiredRawSkinId) {
+      return false;
+    }
+    localPlayer.selectedSkinId = desiredRawSkinId;
+    return true;
+  }
+
+  function rewriteNativeRead(path, data) {
+    const protection = window.__roseJadeVisualProtection;
+    const desiredRawSkinId = numeric(protection?.desiredRawSkinId);
+    if (!active || !protection?.active || !desiredRawSkinId) return false;
+    if (path === "/lol-champ-select/v1/skin-selector-info") {
+      if (!data || typeof data !== "object") return false;
+      if (numeric(data.selectedSkinId) === desiredRawSkinId) return false;
+      data.selectedSkinId = desiredRawSkinId;
+      return true;
+    }
+    if (path === "/lol-champ-select/v1/session") {
+      return rewriteSessionSelection(data, desiredRawSkinId);
+    }
+    return false;
+  }
+
   function shouldSuppressVisualRollback(selectedSkinId) {
     const protection = window.__roseJadeVisualProtection;
     if (!active || !protection?.active) return false;
@@ -197,6 +230,20 @@
     return selected !== null && desired !== null && selected !== desired && defaults.has(selected);
   }
 
+  function cloneWebsocketEvent(event, payload) {
+    try {
+      return new MessageEvent(event.type || "message", {
+        data: JSON.stringify(payload),
+        origin: event.origin,
+        lastEventId: event.lastEventId,
+        source: event.source,
+        ports: event.ports,
+      });
+    } catch (_) {
+      return { data: JSON.stringify(payload) };
+    }
+  }
+
   function installNativeWebsocketProjection() {
     if (installNativeWebsocketProjection.registered || !window.rcp?.postInit) return;
     installNativeWebsocketProjection.registered = true;
@@ -205,6 +252,22 @@
         const ws = api.champSelectBinding.socket._websocket;
         if (!ws || ws.__roseJadeReadProjection) return;
         const parentOnMessage = ws.onmessage;
+        refreshNativeSkinPresentation = (desiredRawSkinId) => {
+          if (!active || !latestNativeSkinSelectorEvent || !desiredRawSkinId) return;
+          const payload = JSON.parse(JSON.stringify(latestNativeSkinSelectorEvent.payload));
+          const selectedChampionId = numeric(payload[2]?.data?.selectedChampionId);
+          if (selectedChampionId && selectedChampionId !== Math.floor(desiredRawSkinId / 1000)) {
+            return;
+          }
+          payload[2].data.selectedSkinId = desiredRawSkinId;
+          parentOnMessage.call(
+            ws,
+            cloneWebsocketEvent(latestNativeSkinSelectorEvent.event, payload)
+          );
+          log("info", "Refreshed native classic skin presentation", {
+            selectedSkinId: desiredRawSkinId,
+          });
+        };
         ws.onmessage = function roseJadeProjectedMessage(event) {
           try {
             const payload = JSON.parse(event.data);
@@ -214,14 +277,27 @@
             const eventData = payload[2];
             if (eventData?.uri === "/lol-champ-select/v1/skin-selector-info") {
               const selectedSkinId = eventData.data?.selectedSkinId;
+              latestNativeSkinSelectorEvent = { event, payload };
               if (shouldSuppressVisualRollback(selectedSkinId)) {
-                // ROSE-UI keeps an unowned regular skin visible by withholding
-                // the base-skin rollback event. JADE uses the same contract.
-                log("info", "Suppressed classic selector rollback", {
+                eventData.data.selectedSkinId = numeric(
+                  window.__roseJadeVisualProtection?.desiredRawSkinId
+                );
+                log("info", "Projected classic selector rollback", {
                   selectedSkinId,
-                  desiredSkinId: window.__roseJadeVisualProtection?.desiredRawSkinId,
+                  projectedSkinId: eventData.data.selectedSkinId,
                 });
-                return;
+                return parentOnMessage.call(this, cloneWebsocketEvent(event, payload));
+              }
+            } else if (eventData?.uri === "/lol-champ-select/v1/session") {
+              const protection = window.__roseJadeVisualProtection;
+              if (
+                protection?.active &&
+                rewriteSessionSelection(
+                  eventData.data,
+                  numeric(protection.desiredRawSkinId)
+                )
+              ) {
+                return parentOnMessage.call(this, cloneWebsocketEvent(event, payload));
               }
             }
           } catch (error) {
@@ -262,7 +338,43 @@
           // Let malformed or unrelated requests follow the native path.
         }
       }
-      return nativeFetch(input, init);
+      const response = await nativeFetch(input, init);
+      if (
+        method !== "GET" ||
+        !response?.ok ||
+        (path !== "/lol-champ-select/v1/skin-selector-info" &&
+          path !== "/lol-champ-select/v1/session")
+      ) {
+        return response;
+      }
+      try {
+        const data = await response.clone().json();
+        if (!rewriteNativeRead(path, data)) return response;
+        const desiredRawSkinId = numeric(
+          window.__roseJadeVisualProtection?.desiredRawSkinId
+        ) || 0;
+        const rewriteKey = `${path}|${desiredRawSkinId}`;
+        if (rewriteKey !== lastReadRewriteKey) {
+          lastReadRewriteKey = rewriteKey;
+          log("info", "Projected classic visual selection into native read", {
+            path,
+            desiredRawSkinId,
+          });
+        }
+        const headers = new Headers(response.headers);
+        headers.delete("content-length");
+        return new Response(JSON.stringify(data), {
+          status: response.status,
+          statusText: response.statusText,
+          headers,
+        });
+      } catch (error) {
+        log("warn", "Classic native read projection failed", {
+          path,
+          error: String(error),
+        });
+        return response;
+      }
     };
     projectedFetch.__roseJadeReadProjection = true;
     window.fetch = projectedFetch;
@@ -271,6 +383,9 @@
   function syncVisualSelection(entry, reason, userInitiated = false) {
     if (!bridge || !entry?.name || !entry.resourceSkinId) return;
     if (userInitiated) selectionGeneration += 1;
+    if (visualRollbackProtectionActive) {
+      refreshNativeSkinPresentation?.(entry.rawSkinId);
+    }
     try {
       // Python validates this ID against the active JADE carousel before it
       // updates the same injection state used by regular champion select.
@@ -496,6 +611,32 @@
     return catalog.map(catalogAssetDetails).filter(Boolean);
   }
 
+  function resolveModeCarrierRawSkinId(rawEntries, pickableSkinIds) {
+    const entryIds = new Set(
+      rawEntries.map((entry) => numeric(entry?.id ?? entry?.skinId) || 0).filter(Boolean)
+    );
+    const pickable = pickableSkinIds.filter((value) => entryIds.has(value));
+    const isSpecialCarrier = (value) => value % 1000 === 301 || value % 1000 === 302;
+    const declaredDefault = rawEntries.find(
+      (entry) => entry?.isBase === true || entry?.isDefault === true
+    );
+    const declaredDefaultId = numeric(declaredDefault?.id ?? declaredDefault?.skinId) || 0;
+
+    // JADE initially selects its champion carrier. Preserve Skin301/Skin302
+    // when present; Skin0 is the carrier only for champions without one.
+    return (
+      (entryIds.has(selectedRawSkinId) && isSpecialCarrier(selectedRawSkinId)
+        ? selectedRawSkinId
+        : 0) ||
+      pickable.find(isSpecialCarrier) ||
+      declaredDefaultId ||
+      (entryIds.has(selectedRawSkinId) ? selectedRawSkinId : 0) ||
+      pickable[0] ||
+      [...entryIds][0] ||
+      0
+    );
+  }
+
   function getModeSkinData(rawSkinId) {
     const id = numeric(rawSkinId);
     if (!active || id === null) return null;
@@ -582,6 +723,13 @@
     clearUserNavigation();
     setVisualProtection(entry, reason, visualRollbackProtectionActive);
     scheduleNativeProjection(projectedCatalogIndex, () => {
+      if (
+        active &&
+        desiredVisualSelection?.rawSkinId === entry.rawSkinId &&
+        visualRollbackProtectionActive
+      ) {
+        refreshNativeSkinPresentation?.(entry.rawSkinId);
+      }
       if (typeof onComplete === "function") onComplete();
     });
     adaptNativeController();
@@ -1331,29 +1479,25 @@
       const rawEntries = (Array.isArray(modeSkins) ? modeSkins : []).filter(
         (entry) => Math.floor((numeric(entry?.id ?? entry?.skinId) || 0) / 1000) === rawChampionId
       );
-      const declaredDefault = rawEntries.find(
-        (entry) => entry?.isBase === true || entry?.isDefault === true
-      );
-      modeDefaultRawSkinId = numeric(declaredDefault?.id ?? declaredDefault?.skinId) || 0;
+      let candidates = [];
       try {
         const pickableSkinIds = await fetchJson(
           "/lol-lobby-team-builder/champ-select/v1/pickable-skin-ids"
         );
         if (!active || generation !== requestGeneration) return;
-        const candidates = (Array.isArray(pickableSkinIds) ? pickableSkinIds : [])
+        candidates = (Array.isArray(pickableSkinIds) ? pickableSkinIds : [])
           .map((value) => numeric(value) || 0)
           .filter((value) => Math.floor(value / 1000) === rawChampionId);
-        modeDefaultRawSkinId = modeDefaultRawSkinId
-          || candidates.find((value) => value === selectedRawSkinId)
-          || candidates[0]
-          || 0;
       } catch (error) {
         log("debug", "Waiting for classic default skin catalog", String(error));
       }
-      if (!modeDefaultRawSkinId) {
-        modeDefaultRawSkinId = numeric(rawEntries[0]?.id ?? rawEntries[0]?.skinId) || 0;
-      }
+      modeDefaultRawSkinId = resolveModeCarrierRawSkinId(rawEntries, candidates);
       if (!modeDefaultRawSkinId) return;
+      log("info", "Classic champion carrier resolved", {
+        rawChampionId,
+        carrierRawSkinId: modeDefaultRawSkinId,
+        initialSelectedRawSkinId: selectedRawSkinId,
+      });
     }
     const nextCatalog = (Array.isArray(modeSkins) ? modeSkins : [])
       .map(normalizeCatalogEntry)
@@ -1566,6 +1710,8 @@
     pointerSelectionCommitted = false;
     lastVisualCenterRawSkinId = 0;
     lastVisualProtectionKey = "";
+    lastReadRewriteKey = "";
+    latestNativeSkinSelectorEvent = null;
     refreshInFlight = false;
     if (visualProtectionClearTimer) clearTimeout(visualProtectionClearTimer);
     visualProtectionClearTimer = setTimeout(() => {
