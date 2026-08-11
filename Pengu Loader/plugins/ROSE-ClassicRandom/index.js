@@ -6,19 +6,22 @@
   "use strict";
 
   const BUTTON_ID = "rose-jade-random-button";
+  const MARK_ID = "rose-jade-random-mark";
   const STYLE_ID = "rose-jade-random-style";
   const DISABLED_ASSET = "dice-disabled.png";
   const ENABLED_ASSET = "dice-enabled.png";
+  const FLAG_ASSET = "random_flag.png";
   let bridge = null;
   let active = false;
   let enabled = false;
   let disabledUrl = "";
   let enabledUrl = "";
+  let flagUrl = "";
   let isInJadeChampSelect = false;
   let championLocked = false;
 
   function jadeActive() {
-    return window.__roseJadeWheelDebug?.state?.().active === true;
+    return window.__roseClassicWheelApi?.state?.().active === true;
   }
 
   function selectedCard() {
@@ -31,9 +34,35 @@
     document.getElementById(BUTTON_ID)?.remove();
   }
 
+  function removeMarker() {
+    document.getElementById(MARK_ID)?.remove();
+  }
+
+  function renderMarker() {
+    if (!enabled) {
+      removeMarker();
+      return;
+    }
+    const card = selectedCard();
+    if (!card) {
+      removeMarker();
+      return;
+    }
+    let marker = document.getElementById(MARK_ID);
+    if (!marker) {
+      marker = document.createElement("div");
+      marker.id = MARK_ID;
+      marker.title = "Random skin";
+      marker.setAttribute("aria-label", "Random skin");
+    }
+    if (flagUrl) marker.style.backgroundImage = `url("${flagUrl}")`;
+    if (marker.parentElement !== card) card.appendChild(marker);
+  }
+
   function render() {
     if (!isInJadeChampSelect || !championLocked || !jadeActive()) {
       removeButton();
+      removeMarker();
       return;
     }
     const card = selectedCard();
@@ -50,8 +79,9 @@
       button.addEventListener("click", (event) => {
         event.preventDefault();
         event.stopPropagation();
-        const previousState = enabled ? "enabled" : "disabled";
-        enabled = !enabled;
+        const previousState = active ? "enabled" : "disabled";
+        active = !active;
+        enabled = active;
         render();
         bridge?.send({
           type: "dice-button-click",
@@ -66,17 +96,19 @@
     button.classList.toggle("rose-jade-random-button--enabled", enabled);
     button.dataset.active = enabled ? "true" : "false";
     button.setAttribute("aria-pressed", enabled ? "true" : "false");
+    renderMarker();
   }
 
   function handleAsset(data) {
     const url = String(data?.url || "").replace("localhost", "127.0.0.1");
     if (data?.assetPath === DISABLED_ASSET) disabledUrl = url;
     if (data?.assetPath === ENABLED_ASSET) enabledUrl = url;
+    if (data?.assetPath === FLAG_ASSET) flagUrl = url;
     render();
   }
 
   function requestAssets() {
-    for (const assetPath of [DISABLED_ASSET, ENABLED_ASSET]) {
+    for (const assetPath of [DISABLED_ASSET, ENABLED_ASSET, FLAG_ASSET]) {
       bridge?.send({ type: "request-local-asset", assetPath, timestamp: Date.now() });
     }
   }
@@ -84,12 +116,15 @@
   function handlePhaseChange(data) {
     const phase = String(data?.phase || "");
     const classicMode =
-      Number(data?.mapId) === 453 || String(data?.gameMode || "").toUpperCase() === "JADE";
+      Number(data?.mapId) === 453 ||
+      Number(data?.queueId) === 3260 ||
+      String(data?.gameMode || "").toUpperCase() === "JADE";
     isInJadeChampSelect =
       classicMode && (phase === "ChampSelect" || phase === "FINALIZATION");
     if (!isInJadeChampSelect) {
       championLocked = false;
       removeButton();
+      removeMarker();
       return;
     }
     render();
@@ -103,6 +138,7 @@
   function handleWheelLayout(event) {
     if (event?.detail?.active === false) {
       removeButton();
+      removeMarker();
       return;
     }
     render();
@@ -119,16 +155,22 @@
         width: 38px; height: 23px; padding: 0; border: 0; z-index: 25;
         background: transparent center / contain no-repeat; cursor: pointer;
       }
+      #${MARK_ID} {
+        position: absolute; top: -14px; right: -14px; width: 32px; height: 32px;
+        z-index: 24; pointer-events: none; background: center / contain no-repeat;
+      }
     `;
     document.head.appendChild(style);
     bridge.subscribe("random-mode-state", (data) => {
       active = data?.active === true;
-      enabled = active || data?.diceState === "enabled";
+      enabled = active;
       render();
     });
     bridge.subscribe("local-asset-url", handleAsset);
     bridge.subscribe("phase-change", handlePhaseChange);
     bridge.subscribe("champion-locked", handleChampionLocked);
+    const classicState = window.__roseClassicWheelApi?.state?.();
+    if (classicState) handlePhaseChange(classicState);
     window.addEventListener("rose-jade-wheel-layout", handleWheelLayout);
     bridge.onReady(requestAssets);
     requestAssets();
