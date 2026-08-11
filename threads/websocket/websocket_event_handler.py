@@ -235,6 +235,32 @@ class WebSocketEventHandler:
     def _handle_in_progress_entry(self):
         """Handle entering InProgress phase"""
         from utils.core.logging import log_section
+
+        if is_classic_mode(getattr(self.state, "current_game_mode", None)):
+            classic_target = (
+                getattr(self.state, "classic_visual_skin_id", None)
+                or getattr(self.state, "historic_skin_id", None)
+                or getattr(self.state, "selected_skin_id", None)
+            )
+            log_section(
+                log,
+                "Classic Game Starting",
+                "",
+                {
+                    "TargetSkinID": classic_target,
+                    "LCUSkinID": getattr(self.state, "selected_lcu_skin_id", None),
+                    "CarrierSkinID": getattr(self.state, "classic_default_skin_id", None),
+                    "HistoricMode": getattr(self.state, "historic_mode_active", False),
+                },
+            )
+            log.info(
+                "[CLASSIC:INJECT] game starting target=%s lcu=%s carrier=%s historic=%s",
+                classic_target,
+                getattr(self.state, "selected_lcu_skin_id", None),
+                getattr(self.state, "classic_default_skin_id", None),
+                getattr(self.state, "historic_mode_active", False),
+            )
+            return
         
         if self.state.last_hovered_skin_key:
             log_section(log, f"Game Starting - Last Detected Skin: {self.state.last_hovered_skin_key.upper()}", "", {

@@ -968,7 +968,12 @@ class InjectionTrigger:
                 return has_been_in_progress and phase not in ("InProgress", "Reconnect", "GameStart")
             
             # Inject skin in a separate thread
-            log.info(f"[INJECT] Starting injection: {name}")
+            prefix = (
+                "[CLASSIC:INJECT]"
+                if is_classic_mode(getattr(self.state, "current_game_mode", None))
+                else "[INJECT]"
+            )
+            log.info(f"{prefix} Starting injection target: {name}")
             
             champ_id_for_history = self.state.locked_champ_id
             classic_generation = getattr(
@@ -1107,7 +1112,12 @@ class InjectionTrigger:
     
     def _force_base_skin(self, base_skin_id: int):
         """Force base skin selection via LCU"""
-        log.info(f"[INJECT] Forcing base skin (skinId={base_skin_id})")
+        prefix = (
+            "[CLASSIC:INJECT]"
+            if is_classic_mode(getattr(self.state, "current_game_mode", None))
+            else "[INJECT]"
+        )
+        log.info(f"{prefix} Forcing carrier skin (skinId={base_skin_id})")
 
         # Temporarily skip base skin handling in client
         self.state.ui_skin_thread._broadcast_skip_base_skin()
