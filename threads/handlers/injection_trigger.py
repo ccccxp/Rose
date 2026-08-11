@@ -18,7 +18,11 @@ from utils.core.logging import get_logger, log_action
 from utils.core.junction import is_junction, safe_remove_entry, link_or_extract
 from utils.core.paths import get_injection_dir
 from utils.core.utilities import is_default_skin
-from utils.core.classic_mode_ids import is_classic_mode, mode_skin_id
+from utils.core.classic_mode_ids import (
+    is_classic_mode,
+    mode_skin_id,
+    resource_skin_id,
+)
 from injection.config.base_skin_tracker import start_tracking as _start_skin_tracking
 
 log = get_logger()
@@ -151,9 +155,51 @@ class InjectionTrigger:
             log.error("=" * LOG_SEPARATOR_WIDTH)
             return
         
-        # Check if custom mod is selected for this skin (before logging)
-        ui_skin_id = self.state.last_hovered_skin_id
         locked_champ_id = self.state.locked_champ_id or self.state.hovered_champ_id
+        # In Classic Mode the LCU selection is a legal carrier, while the Rose
+        # selection is the skin that must actually be injected. Never let a
+        # carrier or another owned native skin replace that target at game start.
+        ui_skin_id = self.state.last_hovered_skin_id
+        if is_classic_mode(getattr(self.state, "current_game_mode", None)):
+            classic_visual_skin_id = getattr(
+                self.state, "classic_visual_skin_id", None
+            )
+            classic_history_skin_id = getattr(self.state, "historic_skin_id", None)
+            for classic_target in (classic_visual_skin_id, classic_history_skin_id):
+                if (
+                    classic_target is not None
+                    and self._skin_matches_champion(classic_target, locked_champ_id)
+                ):
+                    try:
+                        ui_skin_id = int(classic_target)
+                    except (TypeError, ValueError):
+                        continue
+                    break
+
+        owned_skin_ids = {
+            resource_skin_id(value)
+            for value in (getattr(self.state, "owned_skin_ids", None) or ())
+        }
+        classic_target_owned = bool(
+            ui_skin_id is not None
+            and (
+                ui_skin_id == getattr(self.state, "classic_default_skin_id", None)
+                or ui_skin_id in owned_skin_ids
+            )
+        )
+        if is_classic_mode(getattr(self.state, "current_game_mode", None)):
+            log.info(
+                "[CLASSIC:INJECT] target resolved "
+                "last_hovered=%s visual=%s historic=%s selected=%s target=%s owned=%s",
+                self.state.last_hovered_skin_id,
+                getattr(self.state, "classic_visual_skin_id", None),
+                getattr(self.state, "historic_skin_id", None),
+                getattr(self.state, "selected_skin_id", None),
+                ui_skin_id,
+                classic_target_owned,
+            )
+
+        # Check if custom mod is selected for this skin (before logging)
         if not self._skin_matches_champion(ui_skin_id, locked_champ_id):
             log.warning(
                 "[INJECT] Refusing to inject skin %s for champion %s: champion mismatch",
@@ -619,7 +665,7 @@ class InjectionTrigger:
 
             if (
                 is_classic_mode(getattr(self.state, "current_game_mode", None))
-                and getattr(self.state, "classic_selected_skin_owned", False)
+                and classic_target_owned
                 and not has_any_mods
             ):
                 log.info(
@@ -642,9 +688,7 @@ class InjectionTrigger:
                 # carrier's skin0 paths and prevent a mod targeting the actual
                 # owned skin (for example Spirit Blossom Sett) from applying.
                 if is_classic_mode(getattr(self.state, "current_game_mode", None)):
-                    target_is_owned = getattr(
-                        self.state, "classic_selected_skin_owned", False
-                    )
+                    target_is_owned = classic_target_owned
                 else:
                     target_is_owned = (
                         effective_skin_id in owned_skin_ids
@@ -719,9 +763,7 @@ class InjectionTrigger:
                 
                 # Check if skin needs to be injected (if unowned, inject base skin ZIP along with map/font/announcer/other mods)
                 if is_classic_mode(getattr(self.state, "current_game_mode", None)):
-                    is_skin_owned = getattr(
-                        self.state, "classic_selected_skin_owned", False
-                    )
+                    is_skin_owned = classic_target_owned
                 else:
                     is_skin_owned = (
                         ui_skin_id is not None and (
