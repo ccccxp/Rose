@@ -19,6 +19,8 @@
   let panelParentRawId = 0;
   let outsideClickHandler = null;
   let previewGeneration = 0;
+  let observer = null;
+  let pollTimer = null;
 
   const CHROMA_CLICK_SOUND_URL =
     "https://127.0.0.1:65236/fe/lol-champ-select/sounds/sfx-cs-button-chromas-click.ogg";
@@ -133,6 +135,7 @@
   }
 
   function closePanel() {
+    previewGeneration += 1;
     document.getElementById(PANEL_ID)?.remove();
     panelParentRawId = 0;
     if (outsideClickHandler) {
@@ -322,7 +325,14 @@
           isBase: choice.isBase,
           parentRawSkinId: rawIdOf(parent),
         });
-        api().projectResourceSelection(resourceId, "chroma-state");
+        if (api()?.projectResourceSelection?.(resourceId, "chroma-state") !== true) {
+          log("warn", "Chroma selection rejected by ClassicWheel", {
+            lcuSkinId: rawId,
+            skinId: resourceId,
+            parentRawSkinId: rawIdOf(parent),
+          });
+          return;
+        }
         bridge?.send({
           type: "chroma-selection",
           chromaId: choice.isBase ? 0 : choice.resourceId,
@@ -374,7 +384,8 @@
       classicMode && (phase === "ChampSelect" || phase === "FINALIZATION");
     if (!isInJadeChampSelect) championLocked = false;
     log("debug", "Phase state updated", { phase, active: isInJadeChampSelect, championLocked });
-    render();
+    if (isInJadeChampSelect) startRendering();
+    else stopRendering();
   }
 
   function handleChampionLocked(data) {
@@ -384,10 +395,30 @@
 
   function handleWheelLayout(event) {
     if (event?.detail?.active === false) {
-      remove();
+      stopRendering();
       return;
     }
+    if (isInJadeChampSelect) startRendering();
+  }
+
+  function startRendering() {
+    if (observer || !document.body) {
+      render();
+      return;
+    }
+    observer = new MutationObserver(render);
+    observer.observe(document.body, { childList: true, subtree: true });
+    pollTimer = setInterval(render, 500);
+    log("debug", "Classic chroma rendering enabled");
     render();
+  }
+
+  function stopRendering() {
+    observer?.disconnect();
+    observer = null;
+    if (pollTimer) clearInterval(pollTimer);
+    pollTimer = null;
+    remove();
   }
 
   function positionPanel(panel, button) {
@@ -533,8 +564,6 @@
     const classicState = api()?.state?.();
     if (classicState) handlePhaseChange(classicState);
     window.addEventListener("rose-jade-wheel-layout", handleWheelLayout);
-    new MutationObserver(render).observe(document.body, { childList: true, subtree: true });
-    setInterval(render, 500);
   }
 
   start();

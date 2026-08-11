@@ -1793,6 +1793,30 @@
     }));
   }
 
+  function replayBridgeState() {
+    if (!active || !catalog.length) return;
+    lastCatalogSyncKey = "";
+    syncModeCatalog("bridge-ready");
+
+    const selection = currentSelection();
+    const parent = catalogEntryForRawSkinId(selection?.lcuSkinId);
+    if (!selection || !parent) return;
+    const presentation = variantPresentation(selection.lcuSkinId, parent);
+    syncVisualSelection(
+      {
+        ...parent,
+        rawSkinId: presentation.rawSkinId,
+        resourceSkinId: presentation.resourceSkinId,
+        name: presentation.skinName,
+      },
+      "bridge-ready"
+    );
+    log("info", "Classic state replayed after bridge connection", {
+      rawSkinId: presentation.rawSkinId,
+      resourceSkinId: presentation.resourceSkinId,
+    });
+  }
+
   async function start() {
     if (typeof document === "undefined" || !document.body) {
       requestAnimationFrame(start);
@@ -1806,6 +1830,7 @@
     });
     bridge.subscribe("historic-state", handleHistoricState);
     bridge.subscribe("random-mode-state", handleRandomModeState);
+    bridge.onReady?.(replayBridgeState);
     await syncContextFromLcu();
     log("info", "Plugin initialized");
   }
