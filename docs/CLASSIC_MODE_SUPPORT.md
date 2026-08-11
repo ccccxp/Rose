@@ -97,13 +97,23 @@ selection and chroma changes, history and random state, LCU carrier state, game
 start identity, package resolution, and the final injection target. Regular-mode
 messages retain their existing prefixes.
 
-## Deferred Work
+## Experimental Mod Components
 
-Full third-party Mod loading in Classic Mode is still experimental and is not
-part of this stable commit series. The excluded work includes Classic-specific
-skin Mod controls, mode-scoped Mod history, and compatibility handling for map,
-font, announcer, UI, voiceover, loading-screen, VFX, SFX, and other Mod
-categories. Those paths require formal validation before they are proposed.
+The Classic third-party Mod source and backend contracts are included so the
+mode-specific state model remains complete. `ROSE-ClassicMods` contains the
+full selector and `ROSE-ClassicSkinSelector` contains the selected-card shortcut.
+Their entry points are stored as `index.js_`, Pengu Loader's native disabled
+format, so neither Classic control is loaded or shown by default.
+
+Classic and regular Mod history use separate persistence scopes. Active skin,
+map, font, announcer, UI, voiceover, loading-screen, VFX, SFX, and other Mod
+selections are discarded before they can cross the mode boundary. The regular
+CustomWheel is also hidden during JADE sessions.
+
+Full Classic Mod loading remains experimental and has not received formal
+live-machine validation. The disabled entry points must not be enabled until
+the relevant package categories and their Classic carrier behavior have been
+validated.
 
 `ROSE-SettingsPanel` integration for Classic skin Mods is also deferred. The
 regular `ROSE-CustomWheel`, `ROSE-CustomSkinSelector`, and SettingsPanel code
