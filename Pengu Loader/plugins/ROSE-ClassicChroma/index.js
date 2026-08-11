@@ -20,7 +20,7 @@
   let outsideClickHandler = null;
 
   function api() {
-    return window.__roseJadeWheelDebug;
+    return window.__roseClassicWheelApi;
   }
 
   function rawIdOf(skin) {
@@ -42,20 +42,12 @@
   }
 
   function currentSelection() {
-    const jade = api();
-    const state = jade?.state?.();
-    if (state?.active !== true) return null;
-    const rawId = Number(
-      state.projectedVariantRawSkinId || state.desiredVisualRawSkinId || state.selectedRawSkinId
-    );
-    const parents = jade.catalogData?.() || [];
-    for (const parent of parents) {
-      if (rawIdOf(parent) === rawId) return { parent, rawId };
-      if (variantsOf(parent).some((child) => rawIdOf(child) === rawId)) {
-        return { parent, rawId };
-      }
-    }
-    return null;
+    const selection = api()?.currentSelection?.();
+    if (!selection?.parentEntry || !selection?.rawSkinId) return null;
+    return {
+      parent: selection.parentEntry,
+      rawId: Number(selection.rawSkinId),
+    };
   }
 
   function colorsOf(skin) {
@@ -293,6 +285,7 @@
           championId: api().state().championId,
           baseSkinId: api().resourceSkinId(rawIdOf(parent)),
           rawSkinId: rawId,
+          source: "classic-chroma",
           primaryColor: choice.primaryColor || null,
           colors: choice.colors,
           timestamp: Date.now(),
@@ -323,7 +316,9 @@
   function handlePhaseChange(data) {
     const phase = String(data?.phase || "");
     const classicMode =
-      Number(data?.mapId) === 453 || String(data?.gameMode || "").toUpperCase() === "JADE";
+      Number(data?.mapId) === 453 ||
+      Number(data?.queueId) === 3260 ||
+      String(data?.gameMode || "").toUpperCase() === "JADE";
     isInJadeChampSelect =
       classicMode && (phase === "ChampSelect" || phase === "FINALIZATION");
     if (!isInJadeChampSelect) championLocked = false;
@@ -482,6 +477,8 @@
     bridge.subscribe("phase-change", handlePhaseChange);
     bridge.subscribe("champion-locked", handleChampionLocked);
     bridge.subscribe("chroma-state", render);
+    const classicState = api()?.state?.();
+    if (classicState) handlePhaseChange(classicState);
     window.addEventListener("rose-jade-wheel-layout", handleWheelLayout);
     new MutationObserver(render).observe(document.body, { childList: true, subtree: true });
     setInterval(render, 500);
