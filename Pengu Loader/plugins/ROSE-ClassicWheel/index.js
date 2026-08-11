@@ -227,7 +227,10 @@
     const defaults = new Set(
       (protection.defaultLcuSkinIds || []).map(numeric).filter(Number.isFinite)
     );
-    return selected !== null && desired !== null && selected !== desired && defaults.has(selected);
+    const automaticProjectionSettled =
+      nativeProjectionTargetIndex < 0 && !pendingUserNavigation;
+    return selected !== null && desired !== null && selected !== desired &&
+      (defaults.has(selected) || automaticProjectionSettled);
   }
 
   function cloneWebsocketEvent(event, payload) {
