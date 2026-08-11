@@ -316,6 +316,16 @@
       choiceButton.addEventListener("click", (event) => {
         event.preventDefault();
         event.stopPropagation();
+        const latest = currentSelection();
+        if (!latest || rawIdOf(latest.parent) !== rawIdOf(parent)) {
+          log("warn", "Ignored stale chroma panel selection", {
+            panelParentRawSkinId: rawIdOf(parent),
+            currentParentRawSkinId: rawIdOf(latest?.parent),
+          });
+          closePanel();
+          render();
+          return;
+        }
         playChromaClickSound();
         const resourceId = choice.resourceId;
         const rawId = choice.rawId;

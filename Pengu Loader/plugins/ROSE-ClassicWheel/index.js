@@ -1373,6 +1373,23 @@
       || catalog.find((entry) => entry.resourceSkinId === selectedResourceSkinId)
       || null;
     const centerEntry = visualCenterEntry || selectedCatalogEntry;
+    const settledOwnedUserSelection = Boolean(
+      pendingUserNavigation &&
+      Date.now() <= pendingUserNavigationUntil &&
+      selectedRawSkinId !== modeDefaultRawSkinId &&
+      selectedCatalogEntry?.available &&
+      visualCenterEntry?.rawSkinId === selectedCatalogEntry.rawSkinId &&
+      desiredVisualSelection?.rawSkinId !== selectedCatalogEntry.rawSkinId &&
+      nativeProjectionTargetIndex < 0
+    );
+    if (settledOwnedUserSelection) {
+      log("info", "Accepted native owned selection over stale carousel target", {
+        selectedRawSkinId,
+        staleTargetRawSkinId: desiredVisualSelection?.rawSkinId || 0,
+      });
+      publishNativeCardSelection(selectedCatalogEntry, "lcu-owned-selection");
+      clearUserNavigation();
+    }
     const navigationPending =
       pendingUserNavigation && Date.now() <= pendingUserNavigationUntil;
     if (pendingUserNavigation && !navigationPending) clearUserNavigation();
