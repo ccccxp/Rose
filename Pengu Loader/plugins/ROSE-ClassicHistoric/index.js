@@ -16,6 +16,9 @@
   let isInJadeChampSelect = false;
   let randomModeActive = false;
   let presentationReady = false;
+  let customModActive = false;
+  let customModName = "";
+  let customModTargetSkinIds = new Set();
 
   function log(level, message, data = null) {
     const method = level === "error" ? "error" : level === "warn" ? "warn" : "log";
@@ -32,6 +35,15 @@
   function cleanup() {
     document.getElementById(MARK_ID)?.remove();
     document.getElementById(TOAST_ID)?.remove();
+  }
+
+  function currentSkinId() {
+    return Number(window.__roseClassicWheelApi?.currentSelection?.()?.skinId) || 0;
+  }
+
+  function customModApplies() {
+    const skinId = currentSkinId();
+    return customModActive && skinId > 0 && customModTargetSkinIds.has(skinId);
   }
 
   function renderMarker() {
@@ -79,9 +91,11 @@
     close.addEventListener("click", (event) => {
       event.preventDefault();
       event.stopPropagation();
-      active = false;
+      const dismissType = customModApplies() ? "dismiss-custom-mod" : "dismiss-historic";
+      if (dismissType === "dismiss-custom-mod") customModActive = false;
+      else active = false;
       cleanup();
-      bridge?.send({ type: "dismiss-historic", timestamp: Date.now() });
+      bridge?.send({ type: dismissType, timestamp: Date.now() });
     });
 
     content.appendChild(text);
@@ -92,8 +106,8 @@
     return toast;
   }
 
-  function renderToast() {
-    if (!skinName) {
+  function renderToast(displayName) {
+    if (!displayName) {
       document.getElementById(TOAST_ID)?.remove();
       return;
     }
@@ -103,19 +117,19 @@
       document.body.appendChild(toast);
     }
     const text = toast.querySelector(".rose-jade-historic-text");
-    if (text && text.textContent !== skinName) text.textContent = skinName;
+    if (text && text.textContent !== displayName) text.textContent = displayName;
   }
 
   function render() {
-    if (
-      !isInJadeChampSelect || !jadeActive() || !active ||
-      randomModeActive || !presentationReady
-    ) {
+    const showHistoric = active && !randomModeActive && presentationReady;
+    const showCustomMod = customModApplies();
+    if (!isInJadeChampSelect || !jadeActive() || (!showHistoric && !showCustomMod)) {
       cleanup();
       return;
     }
-    renderMarker();
-    renderToast();
+    if (showHistoric) renderMarker();
+    else document.getElementById(MARK_ID)?.remove();
+    renderToast(showCustomMod ? customModName : skinName);
   }
 
   function injectStyles() {
@@ -235,6 +249,20 @@
       log("info", "Random state observed", { active: randomModeActive });
       render();
     });
+    bridge.subscribe("custom-mod-state", (data) => {
+      customModActive = data?.active === true;
+      customModName = customModActive ? String(data?.modName || "") : "";
+      customModTargetSkinIds = new Set(
+        (Array.isArray(data?.targetSkinIds) ? data.targetSkinIds : [])
+          .map(Number)
+          .filter((value) => Number.isFinite(value) && value > 0)
+      );
+      const directSkinId = Number(data?.skinId);
+      if (Number.isFinite(directSkinId) && directSkinId > 0) {
+        customModTargetSkinIds.add(directSkinId);
+      }
+      render();
+    });
     bridge.subscribe("local-asset-url", (data) => {
       if (data?.assetPath !== ASSET) return;
       imageUrl = String(data.url || "").replace("localhost", "127.0.0.1");
@@ -249,6 +277,7 @@
       presentationReady = event?.detail?.ready === true;
       render();
     });
+    window.addEventListener("rose-classic-selection-change", render);
     bridge.subscribe("phase-change", handlePhaseChange);
     const classicState = window.__roseClassicWheelApi?.state?.();
     if (classicState) handlePhaseChange(classicState);
