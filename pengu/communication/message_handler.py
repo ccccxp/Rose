@@ -432,10 +432,24 @@ class MessageHandler:
             random_enabled = is_random_enabled_for_champion(champion_id)
         except Exception:
             random_enabled = False
-        if random_enabled and not self.shared_state.random_mode_active:
-            from ui.handlers.randomization_handler import RandomizationHandler
+        if random_enabled:
+            if not self.shared_state.random_mode_active:
+                from ui.handlers.randomization_handler import RandomizationHandler
 
-            RandomizationHandler(self.shared_state, self.skin_scraper).activate_persisted()
+                RandomizationHandler(
+                    self.shared_state, self.skin_scraper
+                ).activate_persisted()
+            # A persisted Classic random preference owns this selection. A
+            # later catalog refresh must not revive Historic mode as well.
+            if (
+                self.shared_state.historic_mode_active
+                or self.shared_state.historic_skin_id is not None
+            ):
+                self.shared_state.historic_mode_active = False
+                self.shared_state.historic_skin_id = None
+                self.shared_state.classic_history_skin_id = None
+                self.broadcaster.broadcast_historic_state()
+            self.shared_state.historic_first_detection_done = True
             return
         if not self.shared_state.historic_first_detection_done:
             from utils.core.historic import get_historic_skin_for_champion

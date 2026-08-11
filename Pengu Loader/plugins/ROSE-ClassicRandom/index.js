@@ -132,6 +132,8 @@
       classicMode && (phase === "ChampSelect" || phase === "FINALIZATION");
     if (!isInJadeChampSelect) {
       championLocked = false;
+      active = false;
+      enabled = false;
       removeButton();
       removeMarker();
       return;
