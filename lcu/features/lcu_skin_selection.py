@@ -43,11 +43,14 @@ class LCUSkinSelection:
             return False
         if not is_classic_skin_id(value):
             return False
-        if value // 1000 != state.classic_mode_champion_id:
+        canonical_skin_id = resource_skin_id(value)
+        if canonical_skin_id // 1000 != state.classic_champion_id:
             return False
-        owned = set(state.owned_skin_ids or ())
-        carrier = state.classic_carrier_lcu_skin_id
-        return value == carrier or value in owned or resource_skin_id(value) in owned
+        owned = {resource_skin_id(item) for item in (state.owned_skin_ids or ())}
+        return (
+            canonical_skin_id == state.classic_default_skin_id
+            or canonical_skin_id in owned
+        )
     
     def set_selected_skin(self, action_id: int, skin_id: int) -> bool:
         """Set the selected skin for a champion select action

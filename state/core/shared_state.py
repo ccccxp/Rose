@@ -68,15 +68,11 @@ class SharedState:
     current_game_mode: Optional[str] = None  # Current game mode (ARAM, CLASSIC, SWIFT_PLAY, etc.)
     current_map_id: Optional[int] = None  # Current map ID (12 = ARAM, 11 = SR)
     current_queue_id: Optional[int] = None  # Current queue ID (2400 = ARAM: Mayhem, etc.)
-    classic_prime_champion_id: Optional[int] = None
-    classic_mode_champion_id: Optional[int] = None
-    classic_carrier_lcu_skin_id: Optional[int] = None
-    classic_carrier_skin_number: Optional[int] = None
-    classic_catalog_raw_skin_ids: set = field(default_factory=set)
-    classic_catalog_resource_skin_ids: set = field(default_factory=set)
-    classic_random_eligible_resource_skin_ids: set = field(default_factory=set)
+    classic_champion_id: Optional[int] = None
+    classic_default_skin_id: Optional[int] = None
+    classic_catalog_skin_ids: set = field(default_factory=set)
+    classic_random_eligible_skin_ids: set = field(default_factory=set)
     classic_visual_skin_id: Optional[int] = None
-    classic_visual_raw_skin_id: Optional[int] = None
     classic_visual_chroma_id: Optional[int] = None
     classic_selected_skin_owned: bool = False
     classic_history_skin_id: Optional[int] = None
@@ -127,15 +123,11 @@ class SharedState:
     def clear_classic_mode(self) -> None:
         """Clear state that must never leak into a regular-mode session."""
         self.selected_lcu_skin_id = None
-        self.classic_prime_champion_id = None
-        self.classic_mode_champion_id = None
-        self.classic_carrier_lcu_skin_id = None
-        self.classic_carrier_skin_number = None
-        self.classic_catalog_raw_skin_ids.clear()
-        self.classic_catalog_resource_skin_ids.clear()
-        self.classic_random_eligible_resource_skin_ids.clear()
+        self.classic_champion_id = None
+        self.classic_default_skin_id = None
+        self.classic_catalog_skin_ids.clear()
+        self.classic_random_eligible_skin_ids.clear()
         self.classic_visual_skin_id = None
-        self.classic_visual_raw_skin_id = None
         self.classic_visual_chroma_id = None
         self.classic_selected_skin_owned = False
         self.classic_history_skin_id = None

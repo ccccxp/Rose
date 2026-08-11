@@ -12,14 +12,6 @@
   const JADE_CHAMPION_OFFSET = 60000;
   const JADE_CHAMPION_MIN = 60001;
   const JADE_CHAMPION_MAX = 60999;
-  const JADE_FALLBACK_DEFAULT_SKIN_NUMBER = 301;
-  const JADE_DEFAULT_CARRIER_OVERRIDES = new Map([
-    ...[
-      2, 15, 21, 22, 23, 26, 27, 31, 32, 33, 34, 35, 37, 40,
-      42, 45, 53, 54, 59, 62, 63, 67, 79, 89, 90, 96, 99, 117,
-    ].map((champion) => [champion, 0]),
-    [10, 302],
-  ]);
   const ROOT_ID = "rose-jade-skin-wheel";
   const STYLE_ID = "rose-jade-skin-wheel-styles";
   const HOST_CLASS = "rose-jade-native-host";
@@ -79,14 +71,11 @@
   let pendingRandomResourceSkinId = 0;
   let appliedRandomResourceSkinId = 0;
   let randomProjectionSuppressed = false;
-  let visualCarrierProtectionActive = false;
+  let visualRollbackProtectionActive = false;
   let projectedVariantRawSkinId = 0;
   let lastVisualCenterRawSkinId = 0;
   let lastLayoutKey = "";
   let lastVisualProtectionKey = "";
-  let lastReadRewriteKey = "";
-  let refreshNativeSkinPresentation = null;
-  let latestNativeSkinSelectorEvent = null;
   let lastCatalogSyncKey = "";
   let visualProtectionClearTimer = null;
 
@@ -160,31 +149,22 @@
     return (JADE_CHAMPION_OFFSET + resourceChampion) * 1000 + (id % 1000);
   }
 
-  function fallbackModeDefaultRawSkinId() {
-    if (!isJadeChampionId(rawChampionId)) return 0;
-    const skinNumber = JADE_DEFAULT_CARRIER_OVERRIDES.get(championId)
-      ?? JADE_FALLBACK_DEFAULT_SKIN_NUMBER;
-    return rawChampionId * 1000 + skinNumber;
-  }
-
   function isModeDefaultRawSkinId(value) {
     const id = numeric(value) || 0;
-    const expected = modeDefaultRawSkinId || fallbackModeDefaultRawSkinId();
+    const expected = modeDefaultRawSkinId;
     return id > 0 && expected > 0 && id === expected;
   }
 
   function isModeDefaultResourceSkinId(value) {
     const id = resourceSkinId(value);
-    const expected = resourceSkinId(
-      modeDefaultRawSkinId || fallbackModeDefaultRawSkinId()
-    );
+    const expected = resourceSkinId(modeDefaultRawSkinId);
     return id > 0 && expected > 0 && id === expected;
   }
 
   async function fetchJson(endpoint) {
     // Always read the real LCU state here. The native JADE controller receives
     // a visual-only projection below, while Python and this adapter must keep
-    // observing the official carrier selected in the client.
+    // observing the official default selected in the client.
     const response = await nativeFetch(endpoint, { credentials: "include" });
     if (!response || !response.ok) {
       throw new Error(`HTTP ${response ? response.status : "NO_RESPONSE"} for ${endpoint}`);
@@ -206,64 +186,15 @@
     return String(init?.method || input?.method || "GET").toUpperCase();
   }
 
-  function rewriteSessionSelection(data, desiredRawSkinId) {
-    if (!data || typeof data !== "object") return false;
-    const localCellId = numeric(data.localPlayerCellId);
-    if (localCellId === null || !Array.isArray(data.myTeam)) return false;
-    const localPlayer = data.myTeam.find(
-      (player) => numeric(player?.cellId) === localCellId
-    );
-    if (!localPlayer || numeric(localPlayer.selectedSkinId) === desiredRawSkinId) {
-      return false;
-    }
-    localPlayer.selectedSkinId = desiredRawSkinId;
-    return true;
-  }
-
-  function rewriteNativeRead(path, data) {
-    const desired = desiredVisualSelection;
-    if (
-      !active ||
-      !desired ||
-      (!visualCarrierProtectionActive && (desired.available || desired.isBase))
-    ) return false;
-    const desiredRawSkinId = desired.rawSkinId;
-
-    if (path === "/lol-champ-select/v1/skin-selector-info") {
-      if (!data || typeof data !== "object") return false;
-      if (numeric(data.selectedSkinId) === desiredRawSkinId) return false;
-      data.selectedSkinId = desiredRawSkinId;
-      return true;
-    }
-    if (path === "/lol-champ-select/v1/session") {
-      return rewriteSessionSelection(data, desiredRawSkinId);
-    }
-    return false;
-  }
-
   function shouldSuppressVisualRollback(selectedSkinId) {
     const protection = window.__roseJadeVisualProtection;
     if (!active || !protection?.active) return false;
     const selected = numeric(selectedSkinId);
     const desired = numeric(protection.desiredRawSkinId);
-    const carriers = new Set(
-      (protection.carrierRawSkinIds || []).map(numeric).filter(Number.isFinite)
+    const defaults = new Set(
+      (protection.defaultLcuSkinIds || []).map(numeric).filter(Number.isFinite)
     );
-    return selected !== null && desired !== null && selected !== desired && carriers.has(selected);
-  }
-
-  function cloneWebsocketEvent(event, payload) {
-    try {
-      return new MessageEvent(event.type || "message", {
-        data: JSON.stringify(payload),
-        origin: event.origin,
-        lastEventId: event.lastEventId,
-        source: event.source,
-        ports: event.ports,
-      });
-    } catch (_) {
-      return { data: JSON.stringify(payload) };
-    }
+    return selected !== null && desired !== null && selected !== desired && defaults.has(selected);
   }
 
   function installNativeWebsocketProjection() {
@@ -274,49 +205,6 @@
         const ws = api.champSelectBinding.socket._websocket;
         if (!ws || ws.__roseJadeReadProjection) return;
         const parentOnMessage = ws.onmessage;
-        refreshNativeSkinPresentation = async (desiredRawSkinId) => {
-          if (!active || !desiredRawSkinId) return;
-          let sourceEvent = latestNativeSkinSelectorEvent?.event || null;
-          let sourcePayload = latestNativeSkinSelectorEvent?.payload || null;
-          if (!sourcePayload) {
-            try {
-              const response = await nativeFetch(
-                "/lol-champ-select/v1/skin-selector-info",
-                { credentials: "include" }
-              );
-              if (!response?.ok) return;
-              sourcePayload = [8, "OnJsonApiEvent", {
-                data: await response.json(),
-                eventType: "Update",
-                uri: "/lol-champ-select/v1/skin-selector-info",
-              }];
-              sourceEvent = new MessageEvent("message", {
-                data: JSON.stringify(sourcePayload),
-              });
-              latestNativeSkinSelectorEvent = {
-                event: sourceEvent,
-                payload: sourcePayload,
-              };
-            } catch (error) {
-              log("warn", "Classic selector presentation refresh failed", String(error));
-              return;
-            }
-          }
-          if (!active) return;
-          const payload = JSON.parse(JSON.stringify(sourcePayload));
-          const selectedChampionId = numeric(payload[2]?.data?.selectedChampionId);
-          if (selectedChampionId && selectedChampionId !== Math.floor(desiredRawSkinId / 1000)) {
-            return;
-          }
-          payload[2].data.selectedSkinId = desiredRawSkinId;
-          parentOnMessage.call(
-            ws,
-            cloneWebsocketEvent(sourceEvent, payload)
-          );
-          log("info", "Refreshed native classic skin presentation", {
-            selectedSkinId: desiredRawSkinId,
-          });
-        };
         ws.onmessage = function roseJadeProjectedMessage(event) {
           try {
             const payload = JSON.parse(event.data);
@@ -326,24 +214,14 @@
             const eventData = payload[2];
             if (eventData?.uri === "/lol-champ-select/v1/skin-selector-info") {
               const selectedSkinId = eventData.data?.selectedSkinId;
-              latestNativeSkinSelectorEvent = { event, payload };
               if (shouldSuppressVisualRollback(selectedSkinId)) {
-                eventData.data.selectedSkinId = numeric(
-                  window.__roseJadeVisualProtection?.desiredRawSkinId
-                );
-                log("info", "Projected classic selector rollback", {
+                // ROSE-UI keeps an unowned regular skin visible by withholding
+                // the base-skin rollback event. JADE uses the same contract.
+                log("info", "Suppressed classic selector rollback", {
                   selectedSkinId,
-                  projectedSkinId: eventData.data.selectedSkinId,
+                  desiredSkinId: window.__roseJadeVisualProtection?.desiredRawSkinId,
                 });
-                return parentOnMessage.call(this, cloneWebsocketEvent(event, payload));
-              }
-            } else if (eventData?.uri === "/lol-champ-select/v1/session") {
-              const protection = window.__roseJadeVisualProtection;
-              if (
-                protection?.active &&
-                rewriteSessionSelection(eventData.data, numeric(protection.desiredRawSkinId))
-              ) {
-                return parentOnMessage.call(this, cloneWebsocketEvent(event, payload));
+                return;
               }
             }
           } catch (error) {
@@ -384,43 +262,7 @@
           // Let malformed or unrelated requests follow the native path.
         }
       }
-      const response = await nativeFetch(input, init);
-      if (
-        method !== "GET" ||
-        !response?.ok ||
-        (path !== "/lol-champ-select/v1/skin-selector-info" &&
-          path !== "/lol-champ-select/v1/session")
-      ) {
-        return response;
-      }
-
-      try {
-        const data = await response.clone().json();
-        if (!rewriteNativeRead(path, data)) return response;
-
-        const rewriteKey = `${path}|${desiredVisualSelection?.rawSkinId || 0}`;
-        if (rewriteKey !== lastReadRewriteKey) {
-          lastReadRewriteKey = rewriteKey;
-          log("info", "Projected classic visual selection into native read", {
-            path,
-            desiredRawSkinId: desiredVisualSelection?.rawSkinId || 0,
-          });
-        }
-        const headers = new Headers(response.headers);
-        headers.delete("content-length");
-        headers.delete("content-encoding");
-        return new Response(JSON.stringify(data), {
-          status: response.status,
-          statusText: response.statusText,
-          headers,
-        });
-      } catch (error) {
-        log("warn", "Classic native read projection failed", {
-          path,
-          error: String(error),
-        });
-        return response;
-      }
+      return nativeFetch(input, init);
     };
     projectedFetch.__roseJadeReadProjection = true;
     window.fetch = projectedFetch;
@@ -429,9 +271,6 @@
   function syncVisualSelection(entry, reason, userInitiated = false) {
     if (!bridge || !entry?.name || !entry.resourceSkinId) return;
     if (userInitiated) selectionGeneration += 1;
-    if (userInitiated && visualCarrierProtectionActive) {
-      refreshNativeSkinPresentation?.(entry.rawSkinId);
-    }
     try {
       // Python validates this ID against the active JADE carousel before it
       // updates the same injection state used by regular champion select.
@@ -439,19 +278,13 @@
         type: "classic-skin-selection",
         schemaVersion: 1,
         mode: JADE_MODE,
-        primeChampionId: entry.championId,
-        modeChampionId: entry.rawChampionId,
-        carrierLcuSkinId: modeDefaultRawSkinId || fallbackModeDefaultRawSkinId(),
-        carrierSkinNumber: (modeDefaultRawSkinId || fallbackModeDefaultRawSkinId()) % 1000,
-        visualSkinId: entry.resourceSkinId,
+        championId: entry.championId,
+        defaultSkinId: resourceSkinId(modeDefaultRawSkinId),
         skin: entry.name,
         originalName: entry.name,
         skinId: entry.resourceSkinId,
-        rawSkinId: entry.rawSkinId,
-        rawChampionId: entry.rawChampionId,
-        baseRawSkinId: modeDefaultRawSkinId || fallbackModeDefaultRawSkinId(),
         catalog: catalogBridgeEntries(),
-        randomEligibleRawSkinIds: catalog.map((item) => item.rawSkinId),
+        randomEligibleSkinIds: catalog.map((item) => item.resourceSkinId),
         source: "jade-wheel",
         reason,
         userInitiated,
@@ -482,8 +315,10 @@
       const id = numeric(skin.id ?? skin.skinId) || 0;
       if (id > 0) {
         entries.push({
-          id,
-          championId: numeric(skin.championId) || fallbackChampionId,
+          id: resourceSkinId(id),
+          championId: resourceChampionId(
+            numeric(skin.championId) || fallbackChampionId
+          ),
         });
       }
       for (const child of variantsOf(skin)) {
@@ -497,7 +332,7 @@
   function syncModeCatalog(reason) {
     if (!bridge || !rawChampionId || !catalog.length) return;
     const entries = catalogBridgeEntries();
-    const baseRawSkinId = modeDefaultRawSkinId || fallbackModeDefaultRawSkinId();
+    const baseRawSkinId = modeDefaultRawSkinId;
     const assetSnapshot = catalogAssetSnapshot();
     const key = `${rawChampionId}|${baseRawSkinId}|${assetSnapshot
       .map((entry) => `${entry.rawSkinId}:${entry.visualPath}`)
@@ -513,15 +348,11 @@
       type: "classic-mode-catalog",
       schemaVersion: 1,
       mode: JADE_MODE,
-      primeChampionId: championId,
-      modeChampionId: rawChampionId,
-      carrierLcuSkinId: baseRawSkinId,
-      carrierSkinNumber: baseRawSkinId % 1000,
-      rawChampionId,
-      selectedRawSkinId,
-      baseRawSkinId,
+      championId,
+      selectedSkinId: selectedResourceSkinId,
+      defaultSkinId: resourceSkinId(baseRawSkinId),
       catalog: entries,
-      randomEligibleRawSkinIds: catalog.map((entry) => entry.rawSkinId),
+      randomEligibleSkinIds: catalog.map((entry) => entry.resourceSkinId),
       reason,
       timestamp: Date.now(),
     });
@@ -538,25 +369,15 @@
     const protectedEntry = active && entry && (force || (!entry.available && !entry.isBase))
       ? entry
       : null;
-    const carrierRawSkinIds = protectedEntry
-      ? Array.from(
-          new Set(
-            [
-              jadeSkinId(protectedEntry.championId * 1000),
-              ...catalog
-                .filter((candidate) => candidate.isBase)
-                .flatMap((candidate) => [candidate.rawSkinId, candidate.resourceSkinId]),
-            ]
-              .filter((value) => Number.isFinite(value) && value > 0)
-          )
-        )
+    const defaultLcuSkinIds = protectedEntry && modeDefaultRawSkinId
+      ? [modeDefaultRawSkinId]
       : [];
     const detail = {
       active: Boolean(protectedEntry),
       reason,
       desiredRawSkinId: protectedEntry?.rawSkinId || 0,
       desiredResourceSkinId: protectedEntry?.resourceSkinId || 0,
-      carrierRawSkinIds,
+      defaultLcuSkinIds,
     };
     const protectionKey = JSON.stringify(detail);
     window.__roseJadeVisualProtection = detail;
@@ -717,7 +538,7 @@
     const id = numeric(resourceId) || 0;
     const isResourceBase = championId > 0 && id === championId * 1000;
     if (isResourceBase) {
-      const defaultRawSkinId = modeDefaultRawSkinId || fallbackModeDefaultRawSkinId();
+      const defaultRawSkinId = modeDefaultRawSkinId;
       const defaultEntry = catalog.find((entry) => entry.rawSkinId === defaultRawSkinId);
       if (defaultEntry) {
         return { entry: defaultEntry, rawSkinId: defaultEntry.rawSkinId };
@@ -753,17 +574,14 @@
       pendingHistoricResourceSkinId = 0;
       lastAppliedHistoricResourceSkinId = 0;
     }
-    visualCarrierProtectionActive = !isModeDefaultResourceSkinId(resourceId);
+    visualRollbackProtectionActive = !isModeDefaultResourceSkinId(resourceId);
     projectedVariantRawSkinId = rawSkinId;
     desiredVisualSelection = entry;
     projectedCatalogIndex = catalog.indexOf(entry);
     lastVisualCenterRawSkinId = 0;
     clearUserNavigation();
-    setVisualProtection(entry, reason, visualCarrierProtectionActive);
+    setVisualProtection(entry, reason, visualRollbackProtectionActive);
     scheduleNativeProjection(projectedCatalogIndex, () => {
-      if (active && desiredVisualSelection?.rawSkinId === entry.rawSkinId) {
-        refreshNativeSkinPresentation?.(entry.rawSkinId);
-      }
       if (typeof onComplete === "function") onComplete();
     });
     adaptNativeController();
@@ -835,7 +653,7 @@
         // The catalog is rebuilt every two seconds, so its entry objects are
         // not stable. Rebind the active projection by ID without replaying the
         // default-card staging animation.
-        visualCarrierProtectionActive = true;
+        visualRollbackProtectionActive = true;
         projectedVariantRawSkinId = selection.rawSkinId;
         desiredVisualSelection = selection.entry;
         projectedCatalogIndex = catalog.indexOf(selection.entry);
@@ -914,7 +732,7 @@
     if (!selection) return;
     if (pendingRandomResourceSkinId === appliedRandomResourceSkinId) {
       projectedVariantRawSkinId = selection.rawSkinId;
-      visualCarrierProtectionActive = !selection.entry.isBase;
+      visualRollbackProtectionActive = !selection.entry.isBase;
       desiredVisualSelection = selection.entry;
       projectedCatalogIndex = catalog.indexOf(selection.entry);
       setVisualProtection(selection.entry, "random-catalog-refresh", true);
@@ -1108,7 +926,7 @@
   function beginUserNavigation(targetRawSkinId = 0) {
     const targetId = numeric(targetRawSkinId) || 0;
     const targetEntry = targetId ? catalogEntryForRawSkinId(targetId) : null;
-    const hadVisualProtection = visualCarrierProtectionActive;
+    const hadVisualProtection = visualRollbackProtectionActive;
     if (
       historicRestoreInProgress || pendingHistoricResourceSkinId ||
       lastAppliedHistoricResourceSkinId
@@ -1123,21 +941,16 @@
       randomProjectionSuppressed = true;
     }
     if (targetEntry) {
-      visualCarrierProtectionActive = !targetEntry.available && !targetEntry.isBase;
+      visualRollbackProtectionActive = !targetEntry.available && !targetEntry.isBase;
       desiredVisualSelection = targetEntry;
       projectedCatalogIndex = catalog.indexOf(targetEntry);
       setVisualProtection(
         targetEntry,
         "user-navigation-target",
-        visualCarrierProtectionActive
+        visualRollbackProtectionActive
       );
-    } else {
-      visualCarrierProtectionActive = false;
-      projectedCatalogIndex = -1;
-      desiredVisualSelection = null;
-      setVisualProtection(null, "user-navigation");
     }
-    if (hadVisualProtection && !visualCarrierProtectionActive) {
+    if (targetEntry && hadVisualProtection && !visualRollbackProtectionActive) {
       for (const card of Array.from(adaptedCards)) clearCompatibility(card);
       adaptedCards.clear();
     }
@@ -1162,8 +975,8 @@
       lastAppliedHistoricResourceSkinId = 0;
     }
     projectedVariantRawSkinId = 0;
-    visualCarrierProtectionActive = !entry.available && !entry.isBase;
-    setVisualProtection(entry, reason, visualCarrierProtectionActive);
+    visualRollbackProtectionActive = !entry.available && !entry.isBase;
+    setVisualProtection(entry, reason, visualRollbackProtectionActive);
     desiredVisualSelection = entry;
     projectedCatalogIndex = catalog.indexOf(entry);
     syncVisualSelection(entry, reason, true);
@@ -1410,12 +1223,20 @@
     const navigationPending =
       pendingUserNavigation && Date.now() <= pendingUserNavigationUntil;
     if (pendingUserNavigation && !navigationPending) clearUserNavigation();
-    const followsUserNavigation = Boolean(
+    const followsKnownUserNavigation = Boolean(
       navigationPending &&
       pendingUserTargetRawSkinId &&
       centerEntry &&
       pendingUserTargetRawSkinId === centerEntry.rawSkinId
     );
+    const followsUnresolvedUserNavigation = Boolean(
+      navigationPending &&
+      !pendingUserTargetRawSkinId &&
+      centerEntry &&
+      centerEntry.rawSkinId !== lastVisualCenterRawSkinId
+    );
+    const followsUserNavigation =
+      followsKnownUserNavigation || followsUnresolvedUserNavigation;
     const isIntermediateUserNavigation = Boolean(
       navigationPending &&
       pendingUserTargetRawSkinId &&
@@ -1431,7 +1252,7 @@
       centerEntry &&
       desiredVisualSelection &&
       desiredVisualSelection.rawSkinId !== centerEntry.rawSkinId &&
-      visualCarrierProtectionActive &&
+      visualRollbackProtectionActive &&
       !followsUserNavigation &&
       !navigationPending &&
       nativeProjectionTargetIndex < 0
@@ -1439,24 +1260,17 @@
     if (centerEntry && centerEntry.rawSkinId !== lastVisualCenterRawSkinId) {
       lastVisualCenterRawSkinId = centerEntry.rawSkinId;
       if (isAutomaticSelectionDrift) {
-        if (refreshNativeSkinPresentation) {
-          refreshNativeSkinPresentation(desiredVisualSelection.rawSkinId);
-          log("info", "Reprojected classic selection after native drift", {
-            observedRawSkinId: centerEntry.rawSkinId,
-            desiredRawSkinId: desiredVisualSelection.rawSkinId,
-          });
-        } else {
-          log("warn", "Native classic selector projection is unavailable", {
-            observedRawSkinId: centerEntry.rawSkinId,
-            desiredRawSkinId: desiredVisualSelection.rawSkinId,
-          });
-        }
+        scheduleNativeProjection(projectedCatalogIndex);
+        log("info", "Restoring classic selection through native carousel", {
+          observedRawSkinId: centerEntry.rawSkinId,
+          desiredRawSkinId: desiredVisualSelection.rawSkinId,
+        });
       } else if (!isIntermediateUserNavigation && !isIntermediateNativeProjection) {
-        visualCarrierProtectionActive = !centerEntry.available && !centerEntry.isBase;
+        visualRollbackProtectionActive = !centerEntry.available && !centerEntry.isBase;
         setVisualProtection(
           centerEntry,
           "visual-center-change",
-          visualCarrierProtectionActive
+          visualRollbackProtectionActive
         );
         if (followsUserNavigation) {
           desiredVisualSelection = centerEntry;
@@ -1511,7 +1325,16 @@
     if (!active || !rawChampionId) return;
     if (!force && catalog.length && Date.now() - catalogLoadedAt < CATALOG_REFRESH_MS) return;
     const generation = requestGeneration;
+    const modeSkins = await fetchJson("/lol-champ-select/v1/skin-carousel-skins");
+    if (!active || generation !== requestGeneration) return;
     if (!modeDefaultRawSkinId) {
+      const rawEntries = (Array.isArray(modeSkins) ? modeSkins : []).filter(
+        (entry) => Math.floor((numeric(entry?.id ?? entry?.skinId) || 0) / 1000) === rawChampionId
+      );
+      const declaredDefault = rawEntries.find(
+        (entry) => entry?.isBase === true || entry?.isDefault === true
+      );
+      modeDefaultRawSkinId = numeric(declaredDefault?.id ?? declaredDefault?.skinId) || 0;
       try {
         const pickableSkinIds = await fetchJson(
           "/lol-lobby-team-builder/champ-select/v1/pickable-skin-ids"
@@ -1520,20 +1343,18 @@
         const candidates = (Array.isArray(pickableSkinIds) ? pickableSkinIds : [])
           .map((value) => numeric(value) || 0)
           .filter((value) => Math.floor(value / 1000) === rawChampionId);
-        const expected = fallbackModeDefaultRawSkinId();
-        modeDefaultRawSkinId = candidates.find((value) => value === expected)
-          || candidates.find((value) => value % 1000 >= 300)
-          || candidates.find((value) => value % 1000 === 0)
+        modeDefaultRawSkinId = modeDefaultRawSkinId
+          || candidates.find((value) => value === selectedRawSkinId)
+          || candidates[0]
           || 0;
       } catch (error) {
         log("debug", "Waiting for classic default skin catalog", String(error));
       }
       if (!modeDefaultRawSkinId) {
-        modeDefaultRawSkinId = fallbackModeDefaultRawSkinId();
+        modeDefaultRawSkinId = numeric(rawEntries[0]?.id ?? rawEntries[0]?.skinId) || 0;
       }
+      if (!modeDefaultRawSkinId) return;
     }
-    const modeSkins = await fetchJson("/lol-champ-select/v1/skin-carousel-skins");
-    if (!active || generation !== requestGeneration) return;
     const nextCatalog = (Array.isArray(modeSkins) ? modeSkins : [])
       .map(normalizeCatalogEntry)
       .filter(
@@ -1572,7 +1393,7 @@
       selectedResourceSkinId = resourceSkinId(nextRawSkin);
       if (championChanged) {
         cancelHistoricVisualRestore("champion-change", true);
-        visualCarrierProtectionActive = false;
+        visualRollbackProtectionActive = false;
         projectedCatalogIndex = -1;
         lastAppliedHistoricResourceSkinId = 0;
         appliedRandomResourceSkinId = 0;
@@ -1730,7 +1551,7 @@
     desiredVisualSelection = null;
     projectedCatalogIndex = -1;
     clearUserNavigation();
-    visualCarrierProtectionActive = false;
+    visualRollbackProtectionActive = false;
     pendingHistoricResourceSkinId = 0;
     lastAppliedHistoricResourceSkinId = 0;
     cancelHistoricVisualRestore("runtime-stop", true);
@@ -1745,8 +1566,6 @@
     pointerSelectionCommitted = false;
     lastVisualCenterRawSkinId = 0;
     lastVisualProtectionKey = "";
-    lastReadRewriteKey = "";
-    latestNativeSkinSelectorEvent = null;
     refreshInFlight = false;
     if (visualProtectionClearTimer) clearTimeout(visualProtectionClearTimer);
     visualProtectionClearTimer = setTimeout(() => {
@@ -1811,9 +1630,9 @@
         ) || parentEntry;
     return {
       championId,
-      rawChampionId,
       skinId: resourceSkinId(rawSkinId),
-      rawSkinId,
+      lcuChampionId: rawChampionId,
+      lcuSkinId: rawSkinId,
       selectedEntry,
       parentEntry,
     };
@@ -1855,9 +1674,9 @@
       mapId,
       queueId,
       championId,
-      rawChampionId,
-      selectedRawSkinId,
-      selectedResourceSkinId,
+      selectedSkinId: selectedResourceSkinId,
+      lcuChampionId: rawChampionId,
+      selectedLcuSkinId: selectedRawSkinId,
       modeSkinCount: catalog.length,
       nativeCardCount: nativeCards().length,
       adaptedCardCount: adaptedCards.size,
@@ -1865,9 +1684,9 @@
       projectedVariantRawSkinId,
       pendingUserTargetRawSkinId,
     }),
-    resourceChampionId,
-    resourceSkinId,
-    jadeSkinId,
+    championIdFromLcu: resourceChampionId,
+    skinIdFromLcu: resourceSkinId,
+    skinIdForLcu: jadeSkinId,
     shouldPatchLcuSelection,
     getModeSkinData,
     catalogAssetSnapshot,

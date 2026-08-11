@@ -157,18 +157,22 @@ class RandomizationHandler:
                 if champion_id:
                     set_random_enabled_for_champion(champion_id, True)
                 self.state.classic_random_enabled = True
-                raw_skin_id = mode_skin_id(random_skin_id)
-                owned_ids = set(getattr(self.state, "owned_skin_ids", None) or ())
-                selected_owned = raw_skin_id in owned_ids or random_skin_id in owned_ids
+                owned_ids = {
+                    resource_skin_id(value)
+                    for value in (getattr(self.state, "owned_skin_ids", None) or ())
+                }
+                selected_owned = (
+                    random_skin_id == self.state.classic_default_skin_id
+                    or random_skin_id in owned_ids
+                )
                 self.state.classic_selected_skin_owned = selected_owned
                 self.state.classic_visual_skin_id = None if selected_owned else random_skin_id
-                self.state.classic_visual_raw_skin_id = None if selected_owned else raw_skin_id
                 self.state.ui_skin_id = random_skin_id
                 self.state.last_hovered_skin_id = random_skin_id
                 self.state.last_hovered_skin_key = random_skin_name
             if classic_mode:
                 log.info(
-                    "[CLASSIC:RANDOM] selected name=%s resource=%s raw=%s owned=%s deferred_projection=true",
+                    "[CLASSIC:RANDOM] selected name=%s skin=%s lcu=%s owned=%s deferred_projection=true",
                     random_skin_name,
                     random_skin_id,
                     mode_skin_id(random_skin_id),
@@ -242,17 +246,17 @@ class RandomizationHandler:
                 for value in (
                     getattr(
                         self.state,
-                        "classic_random_eligible_resource_skin_ids",
+                        "classic_random_eligible_skin_ids",
                         None,
                     )
-                    or getattr(self.state, "classic_catalog_resource_skin_ids", None)
+                    or getattr(self.state, "classic_catalog_skin_ids", None)
                     or ()
                 )
                 if int(value) > 0
                 and int(value) // 1000 == int(champion_id or 0)
                 and int(value) != base_champion_skin_id
-                and int(value) != resource_skin_id(
-                    getattr(self.state, "classic_carrier_lcu_skin_id", 0) or 0
+                and int(value) != int(
+                    getattr(self.state, "classic_default_skin_id", 0) or 0
                 )
             })
             if not candidates:

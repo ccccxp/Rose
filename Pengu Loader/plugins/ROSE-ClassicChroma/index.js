@@ -51,10 +51,10 @@
 
   function currentSelection() {
     const selection = api()?.currentSelection?.();
-    if (!selection?.parentEntry || !selection?.rawSkinId) return null;
+    if (!selection?.parentEntry || !selection?.lcuSkinId) return null;
     return {
       parent: selection.parentEntry,
-      rawId: Number(selection.rawSkinId),
+      rawId: Number(selection.lcuSkinId),
     };
   }
 
@@ -85,7 +85,7 @@
       skin?.chromaPreviewPath || skin?.imagePath || skin?.chromaPath || skin?.tilePath;
     if (directPath) return String(directPath);
 
-    const resourceId = api()?.resourceSkinId?.(rawIdOf(skin)) || 0;
+    const resourceId = api()?.skinIdFromLcu?.(rawIdOf(skin)) || 0;
     const resourceChampionId = Math.floor(resourceId / 1000);
     if (resourceChampionId > 0 && resourceId > 0) {
       return `/lol-game-data/assets/v1/champion-chroma-images/${resourceChampionId}/${resourceId}.png`;
@@ -188,7 +188,7 @@
       .map((skin, index) => ({
         skin,
         rawId: rawIdOf(skin),
-        resourceId: api().resourceSkinId(rawIdOf(skin)),
+        resourceId: api().skinIdFromLcu(rawIdOf(skin)),
         name: String(skin?.name || parent?.name || "Chroma"),
         colors: colorsOf(skin),
         primaryColor: primaryColorOf(skin),
@@ -285,20 +285,19 @@
         const resourceId = choice.resourceId;
         const rawId = choice.rawId;
         log("info", "Chroma selection submitted", {
-          rawSkinId: rawId,
-          resourceSkinId: resourceId,
+          lcuSkinId: rawId,
+          skinId: resourceId,
           isBase: choice.isBase,
           parentRawSkinId: rawIdOf(parent),
         });
         api().projectResourceSelection(resourceId, "chroma-state");
         bridge?.send({
           type: "chroma-selection",
-          skinId: choice.isBase ? 0 : choice.resourceId,
           chromaId: choice.isBase ? 0 : choice.resourceId,
           chromaName: choice.name,
           championId: api().state().championId,
-          baseSkinId: api().resourceSkinId(rawIdOf(parent)),
-          rawSkinId: rawId,
+          baseSkinId: api().skinIdFromLcu(rawIdOf(parent)),
+          skinId: resourceId,
           source: "classic-chroma",
           primaryColor: choice.primaryColor || null,
           colors: choice.colors,

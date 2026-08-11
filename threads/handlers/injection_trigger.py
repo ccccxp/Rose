@@ -18,7 +18,7 @@ from utils.core.logging import get_logger, log_action
 from utils.core.junction import is_junction, safe_remove_entry, link_or_extract
 from utils.core.paths import get_injection_dir
 from utils.core.utilities import is_default_skin
-from utils.core.classic_mode_ids import is_classic_mode
+from utils.core.classic_mode_ids import is_classic_mode, mode_skin_id
 from injection.config.base_skin_tracker import start_tracking as _start_skin_tracking
 
 log = get_logger()
@@ -877,12 +877,13 @@ class InjectionTrigger:
             champ_id = self.state.locked_champ_id or self.state.hovered_champ_id
             if champ_id:
                 if is_classic_mode(getattr(self.state, "current_game_mode", None)):
-                    base_skin_id = getattr(
-                        self.state, "classic_carrier_lcu_skin_id", None
+                    default_skin_id = getattr(
+                        self.state, "classic_default_skin_id", None
                     )
-                    if not base_skin_id:
-                        log.warning("[CLASSIC] No validated carrier available; aborting injection")
+                    if not default_skin_id:
+                        log.warning("[CLASSIC] No native default available; aborting injection")
                         return
+                    base_skin_id = mode_skin_id(default_skin_id)
                 else:
                     base_skin_id = champ_id * 1000
                 
@@ -1504,12 +1505,13 @@ class InjectionTrigger:
             if champion_id and base_skin_name:
                 # Injecting base skin ZIP for unowned skin - force base skin
                 if is_classic_mode(current_mode):
-                    base_skin_id = getattr(
-                        self.state, "classic_carrier_lcu_skin_id", None
+                    default_skin_id = getattr(
+                        self.state, "classic_default_skin_id", None
                     )
-                    if not base_skin_id:
-                        log.warning("[CLASSIC] No validated carrier available; overlay skipped")
+                    if not default_skin_id:
+                        log.warning("[CLASSIC] No native default available; overlay skipped")
                         return
+                    base_skin_id = mode_skin_id(default_skin_id)
                 else:
                     base_skin_id = champion_id * 1000
                 self._force_base_skin(base_skin_id)
