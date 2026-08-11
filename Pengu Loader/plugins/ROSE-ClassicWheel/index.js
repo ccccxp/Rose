@@ -1436,7 +1436,13 @@
           desiredRawSkinId: desiredVisualSelection.rawSkinId,
         });
       } else if (!isIntermediateUserNavigation && !isIntermediateNativeProjection) {
-        visualRollbackProtectionActive = !centerEntry.available && !centerEntry.isBase;
+        const projectedChromaActive = Boolean(
+          projectedVariantRawSkinId &&
+          desiredVisualSelection?.rawSkinId === centerEntry.rawSkinId &&
+          projectedVariantRawSkinId !== centerEntry.rawSkinId
+        );
+        visualRollbackProtectionActive =
+          projectedChromaActive || (!centerEntry.available && !centerEntry.isBase);
         setVisualProtection(
           centerEntry,
           "visual-center-change",
