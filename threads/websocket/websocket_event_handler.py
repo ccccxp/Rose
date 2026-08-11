@@ -356,11 +356,15 @@ class WebSocketEventHandler:
 
         selected_resource_id = resource_skin_id(raw_skin_id)
         owned = set(self.state.owned_skin_ids or ())
-        self.state.classic_selected_skin_owned = (
-            raw_skin_id == self.state.classic_carrier_lcu_skin_id
-            or raw_skin_id in owned
-            or selected_resource_id in owned
+        projected_raw_skin_id = getattr(
+            self.state, "classic_visual_raw_skin_id", None
         )
+        if projected_raw_skin_id is None:
+            self.state.classic_selected_skin_owned = (
+                raw_skin_id == self.state.classic_carrier_lcu_skin_id
+                or raw_skin_id in owned
+                or selected_resource_id in owned
+            )
         self.state.selected_skin_id = selected_resource_id
         try:
             _on_skin_confirmed(selected_resource_id)

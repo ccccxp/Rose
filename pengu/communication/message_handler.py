@@ -401,6 +401,29 @@ class MessageHandler:
         self.shared_state.classic_catalog_resource_skin_ids = {
             resource_skin_id(value) for value in raw_ids
         }
+        eligible_values = payload.get("randomEligibleRawSkinIds")
+        if eligible_values is None:
+            existing = {
+                int(value)
+                for value in self.shared_state.classic_random_eligible_resource_skin_ids
+                if int(value) // 1000 == prime_champion_id
+            }
+            if not existing:
+                existing = {resource_skin_id(value) for value in raw_ids}
+            self.shared_state.classic_random_eligible_resource_skin_ids = existing
+        else:
+            try:
+                eligible_raw_ids = {
+                    int(value)
+                    for value in eligible_values
+                    if int(value) in raw_ids
+                    and int(value) // 1000 == raw_champion_id
+                }
+            except (TypeError, ValueError):
+                eligible_raw_ids = set()
+            self.shared_state.classic_random_eligible_resource_skin_ids = {
+                resource_skin_id(value) for value in eligible_raw_ids
+            }
         return True
 
     def _handle_classic_mode_catalog(self, payload: dict) -> None:
@@ -503,20 +526,35 @@ class MessageHandler:
         self.shared_state.selected_skin_id = visual_skin_id
         self.shared_state.classic_selection_generation = incoming_generation
 
+        selection_source = str(payload.get("source") or "")
         if owned:
             self.shared_state.classic_visual_skin_id = None
             self.shared_state.classic_visual_raw_skin_id = None
             self.shared_state.classic_visual_chroma_id = None
+            self.shared_state.selected_chroma_id = None
             if visual_skin_id not in owned_ids:
                 self.shared_state.owned_skin_ids.add(visual_skin_id)
+            if selection_source == "classic-chroma":
+                lcu = getattr(self.skin_scraper, "lcu", None)
+                if lcu is not None:
+                    lcu.set_my_selection_skin(raw_skin_id)
         else:
             self.shared_state.classic_visual_skin_id = visual_skin_id
             self.shared_state.classic_visual_raw_skin_id = raw_skin_id
             lcu = getattr(self.skin_scraper, "lcu", None)
-            if lcu is not None and self.shared_state.selected_lcu_skin_id != carrier:
+            if lcu is not None:
                 lcu.set_my_selection_skin(carrier)
 
         if payload.get("userInitiated") is True:
+            if (
+                self.shared_state.random_mode_active
+                or self.shared_state.classic_random_enabled
+            ):
+                from ui.handlers.randomization_handler import RandomizationHandler
+
+                RandomizationHandler(
+                    self.shared_state, self.skin_scraper
+                ).cancel()
             self.shared_state.historic_mode_active = False
             self.shared_state.historic_skin_id = None
             self.shared_state.classic_history_skin_id = None
@@ -555,6 +593,7 @@ class MessageHandler:
                     for value in self.shared_state.classic_catalog_raw_skin_ids
                 ],
                 "skin": payload.get("chromaName") or f"skin_{visual_skin_id}",
+                "source": "classic-chroma",
                 "userInitiated": True,
                 "selectionGeneration": (
                     self.shared_state.classic_selection_generation + 1
@@ -563,10 +602,11 @@ class MessageHandler:
         )
         self._handle_classic_skin_selection(selection)
         if self.shared_state.last_hovered_skin_id == visual_skin_id:
-            self.shared_state.classic_visual_chroma_id = (
+            selected_chroma_id = (
                 visual_skin_id if int(payload.get("chromaId") or 0) else None
             )
-            self.shared_state.selected_chroma_id = self.shared_state.classic_visual_chroma_id
+            self.shared_state.classic_visual_chroma_id = selected_chroma_id
+            self.shared_state.selected_chroma_id = selected_chroma_id
             self.broadcaster.broadcast_chroma_state()
     
     def _handle_chroma_selection(self, payload: dict) -> None:

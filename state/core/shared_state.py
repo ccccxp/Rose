@@ -74,6 +74,7 @@ class SharedState:
     classic_carrier_skin_number: Optional[int] = None
     classic_catalog_raw_skin_ids: set = field(default_factory=set)
     classic_catalog_resource_skin_ids: set = field(default_factory=set)
+    classic_random_eligible_resource_skin_ids: set = field(default_factory=set)
     classic_visual_skin_id: Optional[int] = None
     classic_visual_raw_skin_id: Optional[int] = None
     classic_visual_chroma_id: Optional[int] = None
@@ -132,6 +133,7 @@ class SharedState:
         self.classic_carrier_skin_number = None
         self.classic_catalog_raw_skin_ids.clear()
         self.classic_catalog_resource_skin_ids.clear()
+        self.classic_random_eligible_resource_skin_ids.clear()
         self.classic_visual_skin_id = None
         self.classic_visual_raw_skin_id = None
         self.classic_visual_chroma_id = None

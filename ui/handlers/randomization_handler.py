@@ -122,13 +122,20 @@ class RandomizationHandler:
             log.debug("[UI] Randomization was cancelled, aborting start")
             self._randomization_in_progress = False
             return
+
+        classic_mode = is_classic_mode(getattr(self.state, "current_game_mode", None))
+        if classic_mode:
+            self.state.historic_first_detection_done = True
+            self.state.classic_history_skin_id = None
         
         # Disable HistoricMode if active
         try:
-            if getattr(self.state, 'historic_mode_active', False):
+            historic_mode_active = getattr(self.state, 'historic_mode_active', False)
+            if historic_mode_active or classic_mode:
                 self.state.historic_mode_active = False
                 self.state.historic_skin_id = None
-                log.info("[HISTORIC] Historic mode DISABLED due to RandomMode activation")
+                if historic_mode_active:
+                    log.info("[HISTORIC] Historic mode DISABLED due to RandomMode activation")
                 # Broadcast state to JavaScript
                 try:
                     if self.state and hasattr(self.state, 'ui_skin_thread') and self.state.ui_skin_thread:
@@ -156,12 +163,6 @@ class RandomizationHandler:
                 self.state.classic_selected_skin_owned = selected_owned
                 self.state.classic_visual_skin_id = None if selected_owned else random_skin_id
                 self.state.classic_visual_raw_skin_id = None if selected_owned else raw_skin_id
-                if selected_owned:
-                    lcu = getattr(self.skin_scraper, "lcu", None)
-                    if lcu is not None and getattr(
-                        self.state, "selected_lcu_skin_id", None
-                    ) != raw_skin_id:
-                        lcu.set_my_selection_skin(raw_skin_id)
                 self.state.ui_skin_id = random_skin_id
                 self.state.last_hovered_skin_id = random_skin_id
                 self.state.last_hovered_skin_key = random_skin_name
@@ -230,7 +231,13 @@ class RandomizationHandler:
             candidates = sorted({
                 int(value)
                 for value in (
-                    getattr(self.state, "classic_catalog_resource_skin_ids", None) or ()
+                    getattr(
+                        self.state,
+                        "classic_random_eligible_resource_skin_ids",
+                        None,
+                    )
+                    or getattr(self.state, "classic_catalog_resource_skin_ids", None)
+                    or ()
                 )
                 if int(value) > 0
                 and int(value) // 1000 == int(champion_id or 0)
