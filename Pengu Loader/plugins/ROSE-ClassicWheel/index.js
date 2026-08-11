@@ -387,6 +387,7 @@
       refreshNativeSkinPresentation?.(entry.rawSkinId);
     }
     try {
+      const entries = catalogBridgeEntries();
       // Python validates this ID against the active JADE carousel before it
       // updates the same injection state used by regular champion select.
       bridge.send({
@@ -398,8 +399,8 @@
         skin: entry.name,
         originalName: entry.name,
         skinId: entry.resourceSkinId,
-        catalog: catalogBridgeEntries(),
-        randomEligibleSkinIds: catalog.map((item) => item.resourceSkinId),
+        catalog: entries,
+        randomEligibleSkinIds: entries.map((item) => item.id),
         source: "jade-wheel",
         reason,
         userInitiated,
@@ -467,7 +468,7 @@
       selectedSkinId: selectedResourceSkinId,
       defaultSkinId: resourceSkinId(baseRawSkinId),
       catalog: entries,
-      randomEligibleSkinIds: catalog.map((entry) => entry.resourceSkinId),
+      randomEligibleSkinIds: entries.map((entry) => entry.id),
       reason,
       timestamp: Date.now(),
     });

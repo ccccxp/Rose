@@ -165,8 +165,15 @@ class RandomizationHandler:
                     random_skin_id == self.state.classic_default_skin_id
                     or random_skin_id in owned_ids
                 )
+                selected_chroma = (
+                    random_skin_id
+                    if random_skin_id in self.skin_scraper.cache.chroma_id_map
+                    else None
+                )
                 self.state.classic_selected_skin_owned = selected_owned
                 self.state.classic_visual_skin_id = None if selected_owned else random_skin_id
+                self.state.classic_visual_chroma_id = selected_chroma
+                self.state.selected_chroma_id = selected_chroma
                 self.state.ui_skin_id = random_skin_id
                 self.state.last_hovered_skin_id = random_skin_id
                 self.state.last_hovered_skin_key = random_skin_name
@@ -241,7 +248,7 @@ class RandomizationHandler:
         base_champion_skin_id = champion_id * 1000 if champion_id else None
 
         if is_classic_mode(getattr(self.state, "current_game_mode", None)):
-            candidates = sorted({
+            eligible_ids = {
                 int(value)
                 for value in (
                     getattr(
@@ -258,15 +265,23 @@ class RandomizationHandler:
                 and int(value) != int(
                     getattr(self.state, "classic_default_skin_id", 0) or 0
                 )
-            })
+            }
+            chroma_id_map = self.skin_scraper.cache.chroma_id_map
+            candidates = sorted(
+                value for value in eligible_ids if value not in chroma_id_map
+            )
             if not candidates:
                 return None
             selected_id = random.choice(candidates)
             skin_data = self.skin_scraper.cache.get_skin_by_id(selected_id) or {}
-            return (
-                skin_data.get("skinName") or f"skin_{selected_id}",
-                selected_id,
+            selected_name = skin_data.get("skinName") or f"skin_{selected_id}"
+            options = [(selected_name, selected_id)]
+            options.extend(
+                (chroma.get("name") or selected_name, chroma["id"])
+                for chroma in self.skin_scraper.get_chromas_for_skin(selected_id) or ()
+                if chroma.get("id") in eligible_ids
             )
+            return random.choice(options)
 
         if not self.skin_scraper.cache.skins:
             log.warning("[UI] No skins available for random selection")
